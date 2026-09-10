@@ -382,11 +382,11 @@ kill_dl() {
 
 download_file() {
 	local url="$1" dest="$2" timeout="$3" expected="$4"
-	local pid n sz last
+	local pid n sz
 	[ -n "$url" ] || return 1
 	timeout=${timeout:-300}
 	expected=${expected:-0}
-	rm -f "$dest" "$CANCEL"
+	rm -f "$dest"
 	write_progress 0 "$expected"
 	pin_update_hosts
 	curl -4 -k -fL --connect-timeout 8 --max-time "$timeout" \
@@ -394,7 +394,6 @@ download_file() {
 	pid=$!
 	echo "$pid" > "$DL_PID"
 	n=0
-	last=0
 	while pid_alive "$pid"; do
 		if cancel_requested; then
 			kill -9 "$pid" 2>/dev/null || true
@@ -417,6 +416,26 @@ download_file() {
 	sz=$(wc -c < "$dest" 2>/dev/null || echo 0)
 	write_progress "$sz" "$expected"
 	return 0
+}
+
+download_with_mirrors() {
+	local origin="$1" dest="$2" timeout="$3" line url rc
+	[ -n "$origin" ] || return 1
+	timeout=${timeout:-180}
+	pin_update_hosts
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		cancel_requested && return 2
+		url=$(apply_line "$origin" "$line")
+		[ -n "$url" ] || continue
+		download_file "$url" "$dest" "$timeout" 0
+		rc=$?
+		[ "$rc" = 0 ] && return 0
+		[ "$rc" = 2 ] && return 2
+	done <<EOF
+$(line_ids)
+EOF
+	return 1
 }
 
 cache_field() {
@@ -459,7 +478,7 @@ cmd_apply() {
 			return 1
 		}
 		set_phase downloading "" ipk
-		if ! download_file "$url" "$IPK_DEST" 120 0; then
+		if ! download_with_mirrors "$url" "$IPK_DEST" 120; then
 			rc=$?
 			rm -f "$IPK_DEST"
 			if [ "$rc" = 2 ]; then
@@ -512,7 +531,7 @@ cmd_apply() {
 		return 1
 	}
 	set_phase downloading "" firmware
-	if ! download_file "$url" "$FW_DEST" 600 0; then
+	if ! download_with_mirrors "$url" "$FW_DEST" 180; then
 		rc=$?
 		rm -f "$FW_DEST"
 		if [ "$rc" = 2 ]; then
@@ -520,7 +539,7 @@ cmd_apply() {
 			echo '{"ok":true,"phase":"idle","error":"cancelled"}'
 		else
 			set_phase error download
-			echo '{"ok":false,"error":"download","msg":"下载失败"}'
+			echo '{"ok":false,"error":"download","msg":"固件下载失败"}'
 		fi
 		unlock_me
 		trap - EXIT
@@ -534,15 +553,13 @@ cmd_apply() {
 		echo '{"ok":false,"error":"image","msg":"固件校验失败"}'
 		return 1
 	fi
-	if command -v sysupgrade >/dev/null 2>&1; then
-		if sysupgrade -T "$FW_DEST" >/tmp/vps000-update-image.log 2>&1; then
-			:
-		else
-			# Older sysupgrade may not support -T; still try if file looks like a uImage.
-			if ! grep -q 'sysupgrade' /tmp/vps000-update-image.log 2>/dev/null; then
-				true
-			fi
-		fi
+	if ! /sbin/sysupgrade -T "$FW_DEST" >/tmp/vps000-update-image.log 2>&1; then
+		rm -f "$FW_DEST"
+		set_phase error image
+		unlock_me
+		trap - EXIT
+		echo '{"ok":false,"error":"image","msg":"固件不适用于本机"}'
+		return 1
 	fi
 	set_phase rebooting "" firmware
 	rm -f "$PROGRESS"
@@ -550,7 +567,6 @@ cmd_apply() {
 	trap - EXIT
 	(
 		sleep 1
-		killall -q uhttpd 2>/dev/null || true
 		/sbin/sysupgrade "$FW_DEST"
 	) >/dev/null 2>&1 &
 	echo '{"ok":true,"phase":"rebooting","target":"firmware","msg":"正在升级固件，请勿断电"}'

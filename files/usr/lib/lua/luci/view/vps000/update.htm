@@ -61,7 +61,7 @@
 <div id="vps000-upd">
 	<div class="vps-head">
 		<h2 name="content">更新</h2>
-		<p class="vps-sub">从 GitHub Release 检查并安装软件包或整包固件。仓库 vps668/luci-app-vps000。</p>
+		<p class="vps-sub">从 GitHub Release 检查并安装软件包，或升级整包固件（保留配置并重启）。仓库 vps668/luci-app-vps000。</p>
 	</div>
 	<div id="vps-upd-msg" class="vps-msg">尚未检查。</div>
 	<div class="vps-bar">
@@ -198,7 +198,7 @@
 
 		$('vps-upd-check').disabled = busy || fetching;
 		$('vps-upd-ipk').disabled = busy || !(pkg.newer == 1 || pkg.newer === true);
-		$('vps-upd-fw').disabled = busy || !(fw.newer == 1 || fw.newer === true);
+		$('vps-upd-fw').disabled = busy || fetching || !fw.url || (fw.compatible === false || fw.compatible == 0);
 		$('vps-upd-cancel').style.display = (phase == 'downloading') ? '' : 'none';
 
 		if (phase == 'rebooting')
