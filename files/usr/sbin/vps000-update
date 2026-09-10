@@ -38,7 +38,10 @@ local_pkg_ver() {
 }
 
 local_fw_ver() {
-	read_kv VPS000_VERSION
+	local v
+	v=$(read_kv VPS000_IMAGE)
+	[ -n "$v" ] || v=$(read_kv VPS000_VERSION)
+	printf '%s' "$v"
 }
 
 local_board() {
@@ -468,6 +471,12 @@ cmd_apply() {
 		return 1
 	}
 	if [ "$target" = ipk ]; then
+		if [ "$(cache_field '@.remote.vps000.newer')" != 1 ]; then
+			unlock_me
+			trap - EXIT
+			echo '{"ok":false,"error":"latest","msg":"已是最新"}'
+			return 1
+		fi
 		url=$(cache_field '@.remote.vps000.url')
 		sha=$(cache_field '@.remote.vps000.sha256')
 		[ -n "$url" ] || {
@@ -521,6 +530,12 @@ cmd_apply() {
 		return 0
 	fi
 
+	if [ "$(cache_field '@.remote.firmware.newer')" != 1 ]; then
+		unlock_me
+		trap - EXIT
+		echo '{"ok":false,"error":"latest","msg":"已是最新"}'
+		return 1
+	fi
 	url=$(cache_field '@.remote.firmware.url')
 	sha=$(cache_field '@.remote.firmware.sha256')
 	[ -n "$url" ] || {

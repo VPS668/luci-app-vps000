@@ -67,8 +67,10 @@ if find_firmware; then
 	FW_NAME=$(basename "$FW")
 	FW_SHA=$(sha256sum "$FW" | awk '{print $1}')
 	cp -f "$FW" "$ROOT/release/$FW_NAME"
+	IMG_VER=$(sed -n 's/^PKG_IMAGE_VERSION:=//p' "$ROOT/Makefile" | head -1)
+	[ -n "$IMG_VER" ] || IMG_VER=$VER
 	FW_JSON=$(printf ',"firmware":{"version":"%s","board":"mt7628","filename":"%s","url":"https://github.com/%s/releases/download/%s/%s","sha256":"%s"}' \
-		"$VER" "$FW_NAME" "$REPO_SLUG" "$TAG" "$FW_NAME" "$FW_SHA")
+		"$IMG_VER" "$FW_NAME" "$REPO_SLUG" "$TAG" "$FW_NAME" "$FW_SHA")
 	echo "firmware: $ROOT/release/$FW_NAME"
 else
 	echo "warning: firmware image not found (pass --firmware or set VPS000_FIRMWARE)" >&2

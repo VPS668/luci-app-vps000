@@ -2,7 +2,8 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-vps000
 PKG_VERSION:=1.3.1
-PKG_RELEASE:=2
+PKG_RELEASE:=3
+PKG_IMAGE_VERSION:=1.3.1-2
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
@@ -44,6 +45,7 @@ define Package/$(PKG_NAME)/install
 	chmod 0644 $(1)/usr/share/vps000/portal.sh 2>/dev/null || true
 	chmod 0644 $(1)/etc/openconnect/connect.d/10-vps000-dns 2>/dev/null || true
 	echo "VPS000_VERSION=$(PKG_VERSION)-$(PKG_RELEASE)" > $(1)/usr/share/vps000/version
+	echo "VPS000_IMAGE=$(PKG_IMAGE_VERSION)" >> $(1)/usr/share/vps000/version
 	echo "VPS000_REPO=vps668/luci-app-vps000" >> $(1)/usr/share/vps000/version
 	echo "VPS000_BOARD=mt7628" >> $(1)/usr/share/vps000/version
 endef

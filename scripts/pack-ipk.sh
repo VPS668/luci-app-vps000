@@ -20,8 +20,10 @@ chmod 0755 "$WORKDIR/data/usr/sbin/vps000" \
 	"$WORKDIR/data/etc/hotplug.d/iface/99-vps000" \
 	"$WORKDIR/data/usr/share/vps000/killswitch.fw" 2>/dev/null || true
 
-printf 'VPS000_VERSION=%s\nVPS000_REPO=vps668/luci-app-vps000\nVPS000_BOARD=mt7628\n' \
-	"$VER" > "$WORKDIR/data/usr/share/vps000/version"
+PKG_IMAGE_VERSION=$(sed -n 's/^PKG_IMAGE_VERSION:=//p' Makefile | head -1)
+[ -n "$PKG_IMAGE_VERSION" ] || PKG_IMAGE_VERSION=$VER
+printf 'VPS000_VERSION=%s\nVPS000_IMAGE=%s\nVPS000_REPO=vps668/luci-app-vps000\nVPS000_BOARD=mt7628\n' \
+	"$VER" "$PKG_IMAGE_VERSION" > "$WORKDIR/data/usr/share/vps000/version"
 
 SIZE=$(du -sb "$WORKDIR/data" | awk '{print $1}')
 

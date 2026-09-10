@@ -32,6 +32,11 @@
 	#vps000-upd .vps-msg-wait { color: #d68910; }
 	#vps000-upd .vps-bar { padding: 8px 0 0; }
 	#vps000-upd .vps-bar .cbi-button { min-width: 110px; margin-right: 8px; margin-bottom: 8px; }
+	#vps000-upd .vps-bar .cbi-button[disabled] {
+		opacity: 0.45;
+		cursor: default;
+		pointer-events: none;
+	}
 	#vps000-upd .vps-notes {
 		white-space: pre-wrap;
 		background: #f8f9fa;
@@ -112,6 +117,17 @@
 
 	function $(id) { return document.getElementById(id); }
 
+	function isNewer(v) {
+		return v === true || v === 1 || v === '1';
+	}
+
+	function setDisabled(el, off) {
+		if (!el) return;
+		el.disabled = !!off;
+		if (off) el.setAttribute('disabled', 'disabled');
+		else el.removeAttribute('disabled');
+	}
+
 	function post(url, data, cb) {
 		var x = new XMLHttpRequest();
 		var body = [];
@@ -153,6 +169,7 @@
 		if (code == 'no-firmware') return '此版本没有本机固件。';
 		if (code == 'busy') return '已有更新在进行。';
 		if (code == 'cancelled') return '已取消。';
+		if (code == 'latest') return '已是最新。';
 		return code ? '更新失败。' : '';
 	}
 
@@ -178,7 +195,7 @@
 
 		if (!rem.tag && !st.checked_at)
 			pill($('vps-st-pkg'), fetching ? '检查中…' : '未检查', 'warn');
-		else if (pkg.newer == 1 || pkg.newer === true)
+		else if (isNewer(pkg.newer))
 			pill($('vps-st-pkg'), '有新版本', 'warn');
 		else if (pkg.version)
 			pill($('vps-st-pkg'), '已是最新', 'ok');
@@ -187,7 +204,7 @@
 
 		if (!rem.tag && !st.checked_at)
 			pill($('vps-st-fw'), fetching ? '检查中…' : '未检查', 'warn');
-		else if (fw.newer == 1 || fw.newer === true)
+		else if (isNewer(fw.newer))
 			pill($('vps-st-fw'), '有新版本', 'warn');
 		else if (fw.compatible === false || fw.compatible == 0)
 			pill($('vps-st-fw'), '无本机镜像', 'warn');
@@ -196,9 +213,15 @@
 		else
 			pill($('vps-st-fw'), '无固件', 'warn');
 
-		$('vps-upd-check').disabled = busy || fetching;
-		$('vps-upd-ipk').disabled = busy || !(pkg.newer == 1 || pkg.newer === true);
-		$('vps-upd-fw').disabled = busy || fetching || !fw.url || (fw.compatible === false || fw.compatible == 0);
+		var pkgOff = busy || fetching || !isNewer(pkg.newer);
+		var fwOff = busy || fetching || !isNewer(fw.newer);
+		setDisabled($('vps-upd-check'), busy || fetching);
+		setDisabled($('vps-upd-ipk'), pkgOff);
+		setDisabled($('vps-upd-fw'), fwOff);
+		if (fwOff) {
+			fwConfirm = false;
+			$('vps-upd-fw').value = '更新固件';
+		}
 		$('vps-upd-cancel').style.display = (phase == 'downloading') ? '' : 'none';
 
 		if (phase == 'rebooting')
@@ -242,7 +265,7 @@
 		});
 	};
 	$('vps-upd-ipk').onclick = function() {
-		if (posted) return;
+		if (posted || this.disabled) return;
 		posted = true;
 		post(U_AP, { target: 'ipk' }, function() {
 			posted = false;
@@ -250,7 +273,7 @@
 		});
 	};
 	$('vps-upd-fw').onclick = function() {
-		if (posted) return;
+		if (posted || this.disabled) return;
 		if (!fwConfirm) {
 			fwConfirm = true;
 			this.value = '确认更新固件';
