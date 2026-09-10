@@ -898,11 +898,47 @@ trim_gw() {
 
 lan_dev() {
 	local d
+	[ -d /sys/class/net/br-lan ] && { printf '%s' br-lan; return 0; }
 	d=$(uci -q get network.lan.ifname)
 	d=$(printf '%s' "$d" | awk '{print $1}')
 	[ -n "$d" ] && [ -d "/sys/class/net/$d" ] && { printf '%s' "$d"; return 0; }
-	[ -d /sys/class/net/br-lan ] && { printf '%s' br-lan; return 0; }
 	printf '%s' br-lan
+}
+
+# $1=IPv4  $2=cidr  (BusyBox awk, no bitwise ops)
+ip_in_cidr() {
+	[ -n "$1" ] && [ -n "$2" ] || return 1
+	echo "$1 $2" | awk '
+	{
+		split($1, A, ".")
+		split($2, P, "/")
+		split(P[1], B, ".")
+		bits = P[2] + 0
+		if (bits < 0 || bits > 32) exit 1
+		left = bits
+		for (i = 1; i <= 4; i++) {
+			n = (left >= 8) ? 8 : ((left > 0) ? left : 0)
+			if (topbits(A[i] + 0, n) != topbits(B[i] + 0, n)) exit 1
+			left -= n
+		}
+		exit 0
+	}
+	function topbits(x, n) {
+		if (n >= 8) return x
+		if (n <= 0) return 0
+		d = 1
+		for (k = 0; k < (8 - n); k++) d *= 2
+		return int(x / d) * d
+	}'
+}
+
+iface_owns_prefix() {
+	local dev="$1" cidr="$2" a
+	[ -n "$dev" ] && [ -d "/sys/class/net/$dev" ] || return 1
+	for a in $(ip -4 addr show dev "$dev" 2>/dev/null | awk '/inet /{gsub(/\/.*/, "", $2); print $2}'); do
+		ip_in_cidr "$a" "$cidr" && return 0
+	done
+	return 1
 }
 
 reserved_unicast() {
@@ -929,6 +965,40 @@ reserved_localonly() {
 		255.255.255.255/32
 }
 
+# Keep reserved destinations off the TUN. Prefer the interface that
+# already owns the prefix (LAN / WAN); otherwise stay on lo.
+pin_one_reserved() {
+	local p="$1" table="$2" wan="$3" gw="$4" lan="$5" extra=""
+	[ -n "$table" ] && extra="table $table"
+	case "$p" in
+		169.254.0.0/16)
+			if [ -n "$wan" ]; then
+				# shellcheck disable=SC2086
+				ip route replace "$p" dev "$wan" proto static scope link $extra 2>/dev/null || true
+			else
+				# shellcheck disable=SC2086
+				ip route replace "$p" dev lo proto static $extra 2>/dev/null || true
+			fi
+			return 0
+			;;
+	esac
+	if [ -n "$lan" ] && iface_owns_prefix "$lan" "$p"; then
+		# shellcheck disable=SC2086
+		ip route replace "$p" dev "$lan" proto static $extra 2>/dev/null || true
+	elif [ -n "$wan" ] && iface_owns_prefix "$wan" "$p"; then
+		if [ -n "$gw" ]; then
+			# shellcheck disable=SC2086
+			ip route replace "$p" via "$gw" dev "$wan" $extra 2>/dev/null || true
+		else
+			# shellcheck disable=SC2086
+			ip route replace "$p" dev "$wan" proto static scope link $extra 2>/dev/null || true
+		fi
+	else
+		# shellcheck disable=SC2086
+		ip route replace "$p" dev lo proto static $extra 2>/dev/null || true
+	fi
+}
+
 pin_reserved_into() {
 	local gw dev table p lan
 	gw=$(trim_gw "$1")
@@ -937,47 +1007,27 @@ pin_reserved_into() {
 	[ -n "$dev" ] || dev=$(wan_dev)
 	[ -n "$gw" ] || gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
 	[ -n "$gw" ] || gw=$(wan_gw)
-	[ -n "$dev" ] || return 1
-	[ -n "$gw" ] || return 1
-	for p in $(reserved_unicast); do
-		case "$p" in
-			169.254.0.0/16)
-				if [ -n "$table" ]; then
-					ip route replace "$p" dev "$dev" proto static scope link table "$table" 2>/dev/null || true
-				else
-					ip route replace "$p" dev "$dev" proto static scope link 2>/dev/null || true
-				fi
-				;;
-			*)
-				if [ -n "$table" ]; then
-					ip route replace "$p" via "$gw" dev "$dev" table "$table" 2>/dev/null || true
-				else
-					ip route replace "$p" via "$gw" dev "$dev" 2>/dev/null || true
-				fi
-				;;
-		esac
-	done
 	lan=$(lan_dev)
-	for p in $(reserved_localonly); do
-		case "$p" in
-			224.0.0.0/4)
-				if [ -n "$table" ]; then
-					ip route replace "$p" dev "$lan" proto static table "$table" 2>/dev/null || \
-						ip route replace "$p" dev lo proto static table "$table" 2>/dev/null || true
-				else
-					ip route replace "$p" dev "$lan" proto static 2>/dev/null || \
-						ip route replace "$p" dev lo proto static 2>/dev/null || true
-				fi
-				;;
-			*)
-				if [ -n "$table" ]; then
-					ip route replace "$p" dev lo proto static table "$table" 2>/dev/null || true
-				else
-					ip route replace "$p" dev lo proto static 2>/dev/null || true
-				fi
-				;;
-		esac
+	for p in $(reserved_unicast); do
+		pin_one_reserved "$p" "$table" "$dev" "$gw" "$lan"
 	done
+	for p in $(reserved_localonly); do
+		if [ "$p" = "224.0.0.0/4" ] && [ -n "$lan" ]; then
+			if [ -n "$table" ]; then
+				ip route replace "$p" dev "$lan" proto static table "$table" 2>/dev/null || \
+					ip route replace "$p" dev lo proto static table "$table" 2>/dev/null || true
+			else
+				ip route replace "$p" dev "$lan" proto static 2>/dev/null || \
+					ip route replace "$p" dev lo proto static 2>/dev/null || true
+			fi
+		elif [ -n "$table" ]; then
+			ip route replace "$p" dev lo proto static table "$table" 2>/dev/null || true
+		else
+			ip route replace "$p" dev lo proto static 2>/dev/null || true
+		fi
+	done
+	# Never send loopback via WAN (stale host routes).
+	ip route del 127.0.0.1 2>/dev/null || true
 }
 
 pin_reserved_local() {
@@ -1239,7 +1289,10 @@ apply_split_routes() {
 	stamp="${stamp}_${gw}_${dev}"
 	cur=$(cat "$STATE_DIR/chn_routes.stamp" 2>/dev/null)
 	if [ "$stamp" = "$cur" ]; then
-		[ "$(ip route show table "$CHN_TABLE" 2>/dev/null | grep -cE '^[0-9]')" -ge 50 ] 2>/dev/null && return 0
+		if [ "$(ip route show table "$CHN_TABLE" 2>/dev/null | grep -cE '^[0-9]')" -ge 50 ] 2>/dev/null; then
+			pin_reserved_into "$gw" "$CHN_TABLE"
+			return 0
+		fi
 	fi
 	batch=/tmp/vps000-chn.batch
 	awk -v gw="$gw" -v dev="$dev" -v tid="$CHN_TABLE" '
@@ -1250,6 +1303,7 @@ apply_split_routes() {
 	if ip -batch "$batch" 2>/dev/null; then
 		mkdir_state
 		echo "$stamp" > "$STATE_DIR/chn_routes.stamp"
+		pin_reserved_into "$gw" "$CHN_TABLE"
 		log "chnroutes applied via $gw dev $dev"
 		return 0
 	fi
