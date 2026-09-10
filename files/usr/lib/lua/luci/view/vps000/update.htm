@@ -6,8 +6,7 @@
 <style type="text/css">
 	#vps000-upd { max-width: 860px; }
 	#vps000-upd .vps-head { margin: 0 0 16px; }
-	#vps000-upd .vps-head h2 { margin: 0 0 4px; }
-	#vps000-upd .vps-sub { color: #5d6d7e; margin: 0; font-size: 13px; }
+	#vps000-upd .vps-head h2 { margin: 0; }
 	#vps000-upd .vps-grid { overflow: hidden; margin: 0 -8px 8px; }
 	#vps000-upd .vps-col { float: left; width: 50%; box-sizing: border-box; padding: 0 8px; }
 	#vps000-upd .vps-card {
@@ -36,6 +35,24 @@
 		opacity: 0.45;
 		cursor: default;
 		pointer-events: none;
+	}
+	#vps000-upd .vps-dl { margin: 4px 0 16px; max-width: 520px; }
+	#vps000-upd .vps-dl-track {
+		height: 12px;
+		background: #eef2f5;
+		border: 1px solid #e1e6eb;
+		border-radius: 8px;
+		overflow: hidden;
+	}
+	#vps000-upd .vps-dl-fill {
+		height: 12px;
+		width: 0;
+		background: #2980b9;
+	}
+	#vps000-upd .vps-dl-text {
+		margin: 6px 0 0;
+		font-size: 12px;
+		color: #5d6d7e;
 	}
 	#vps000-upd .vps-notes {
 		white-space: pre-wrap;
@@ -66,12 +83,15 @@
 <div id="vps000-upd">
 	<div class="vps-head">
 		<h2 name="content">更新</h2>
-		<p class="vps-sub">从 GitHub Release 检查并安装软件包，或升级整包固件（保留配置并重启）。仓库 vps668/luci-app-vps000。</p>
 	</div>
 	<div id="vps-upd-msg" class="vps-msg">尚未检查。</div>
 	<div class="vps-bar">
 		<input type="button" class="cbi-button cbi-button-apply" id="vps-upd-check" value="检查更新" />
 		<input type="button" class="cbi-button cbi-button-reset" id="vps-upd-cancel" value="取消下载" style="display:none" />
+	</div>
+	<div id="vps-dl" class="vps-dl" style="display:none">
+		<div class="vps-dl-track"><div class="vps-dl-fill" id="vps-dl-fill"></div></div>
+		<div class="vps-dl-text" id="vps-dl-text">0%</div>
 	</div>
 	<div class="vps-grid">
 		<div class="vps-col">
@@ -112,6 +132,8 @@
 	var U_CA = '<%=luci.dispatcher.build_url("admin", "vps000", "update_cancel")%>';
 	var U_PR = '<%=luci.dispatcher.build_url("admin", "vps000", "update_progress")%>';
 	var timer = null;
+	var prTimer = null;
+	var watching = false;
 	var posted = false;
 	var fwConfirm = false;
 
@@ -152,6 +174,66 @@
 		var el = $('vps-upd-msg');
 		el.className = 'vps-msg' + (kind ? ' vps-msg-' + kind : '');
 		el.innerHTML = text || '';
+	}
+
+	function fmtSize(n) {
+		n = n - 0;
+		if (!(n >= 0)) n = 0;
+		if (n >= 1048576) return (Math.round(n / 104857.6) / 10) + ' MB';
+		if (n >= 1024) return Math.round(n / 1024) + ' KB';
+		return Math.round(n) + ' B';
+	}
+
+	function showProgress(got, total) {
+		got = got - 0;
+		total = total - 0;
+		if (!(got >= 0)) got = 0;
+		if (!(total >= 0)) total = 0;
+		var fill = $('vps-dl-fill');
+		var text = $('vps-dl-text');
+		var pct = 0;
+		if (total > 0) {
+			pct = Math.floor(got * 100 / total);
+			if (pct > 100) pct = 100;
+			fill.style.width = pct + '%';
+			text.innerHTML = fmtSize(got) + ' / ' + fmtSize(total) + '  (' + pct + '%)';
+			setMsg('正在下载 ' + pct + '%…请勿断电或刷新。', 'wait');
+		} else {
+			var w = got > 0 ? (8 + Math.floor(got / 32768)) : 0;
+			if (w > 90) w = 90;
+			fill.style.width = w + '%';
+			text.innerHTML = '已下载 ' + fmtSize(got);
+			setMsg('正在下载…请勿断电或刷新。', 'wait');
+		}
+	}
+
+	function pollProgress() {
+		if (!watching) return;
+		post(U_PR, {}, function(code, text) {
+			if (!watching) return;
+			var p = parse(text) || {};
+			showProgress(p.got || 0, p.total || 0);
+		});
+	}
+
+	function setProgressWatch(on) {
+		var el = $('vps-dl');
+		watching = !!on;
+		if (on) {
+			el.style.display = '';
+			if (!prTimer) {
+				pollProgress();
+				prTimer = window.setInterval(pollProgress, 800);
+			}
+		} else {
+			el.style.display = 'none';
+			if (prTimer) {
+				window.clearInterval(prTimer);
+				prTimer = null;
+			}
+			$('vps-dl-fill').style.width = '0';
+			$('vps-dl-text').innerHTML = '0%';
+		}
 	}
 
 	function pill(el, text, kind) {
@@ -223,12 +305,13 @@
 			$('vps-upd-fw').value = '更新固件';
 		}
 		$('vps-upd-cancel').style.display = (phase == 'downloading') ? '' : 'none';
+		setProgressWatch(phase == 'downloading');
 
 		if (phase == 'rebooting')
 			setMsg('正在升级固件，请勿断电。设备会自行重启。', 'wait');
-		else if (phase == 'downloading')
-			setMsg('正在下载…请勿断电或刷新。', 'wait');
-		else if (phase == 'installing')
+		else if (phase == 'downloading') {
+			/* pollProgress updates the message */
+		} else if (phase == 'installing')
 			setMsg('正在安装软件包…', 'wait');
 		else if (phase == 'checking' || fetching)
 			setMsg('正在检查 GitHub Release…', 'wait');

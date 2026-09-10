@@ -58,6 +58,7 @@ TAG="v$(printf '%s' "$VER" | sed 's/-.*//')"
 NOTES=$(cat "$ROOT/RELEASE_NOTES" 2>/dev/null || echo "${PKG_NAME} ${VER}")
 IPK_NAME=$(basename "$IPK")
 IPK_SHA=$(sha256sum "$IPK" | awk '{print $1}')
+IPK_SIZE=$(wc -c < "$IPK" | awk '{print $1}')
 if [ "$(readlink -f "$IPK")" != "$(readlink -f "$ROOT/release/$IPK_NAME")" ]; then
 	cp -f "$IPK" "$ROOT/release/$IPK_NAME"
 fi
@@ -66,11 +67,12 @@ FW_JSON=""
 if find_firmware; then
 	FW_NAME=$(basename "$FW")
 	FW_SHA=$(sha256sum "$FW" | awk '{print $1}')
+	FW_SIZE=$(wc -c < "$FW" | awk '{print $1}')
 	cp -f "$FW" "$ROOT/release/$FW_NAME"
 	IMG_VER=$(sed -n 's/^PKG_IMAGE_VERSION:=//p' "$ROOT/Makefile" | head -1)
 	[ -n "$IMG_VER" ] || IMG_VER=$VER
-	FW_JSON=$(printf ',"firmware":{"version":"%s","board":"mt7628","filename":"%s","url":"https://github.com/%s/releases/download/%s/%s","sha256":"%s"}' \
-		"$IMG_VER" "$FW_NAME" "$REPO_SLUG" "$TAG" "$FW_NAME" "$FW_SHA")
+	FW_JSON=$(printf ',"firmware":{"version":"%s","board":"mt7628","filename":"%s","url":"https://github.com/%s/releases/download/%s/%s","sha256":"%s","size":%s}' \
+		"$IMG_VER" "$FW_NAME" "$REPO_SLUG" "$TAG" "$FW_NAME" "$FW_SHA" "$FW_SIZE")
 	echo "firmware: $ROOT/release/$FW_NAME"
 else
 	echo "warning: firmware image not found (pass --firmware or set VPS000_FIRMWARE)" >&2
@@ -85,9 +87,9 @@ fi
 # notes as a JSON string
 NOTES_JSON=$(printf '%s' "$NOTES" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
 
-printf '{"tag":"%s","version":"%s","notes":%s,"vps000":{"version":"%s","filename":"%s","url":"https://github.com/%s/releases/download/%s/%s","sha256":"%s"}%s}\n' \
+printf '{"tag":"%s","version":"%s","notes":%s,"vps000":{"version":"%s","filename":"%s","url":"https://github.com/%s/releases/download/%s/%s","sha256":"%s","size":%s}%s}\n' \
 	"$TAG" "$VER" "$NOTES_JSON" \
-	"$VER" "$IPK_NAME" "$REPO_SLUG" "$TAG" "$IPK_NAME" "$IPK_SHA" \
+	"$VER" "$IPK_NAME" "$REPO_SLUG" "$TAG" "$IPK_NAME" "$IPK_SHA" "$IPK_SIZE" \
 	"$FW_JSON" > "$ROOT/release/manifest.json"
 
 echo "ipk: $ROOT/release/$IPK_NAME"
