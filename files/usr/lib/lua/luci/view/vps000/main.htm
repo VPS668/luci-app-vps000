@@ -391,11 +391,7 @@
 			'<div class="vps-meta">' +
 			metaItem('账号', st.account) +
 			metaItem('线路', st.region || st.node) +
-			metaItem('协议', st.proto || 'anyconnect') +
 			metaItem('出口', exitText(st, state)) +
-			(st.plan ? metaItem('套餐', st.plan) : '') +
-			(st.expire ? metaItem('到期', st.expire) : '') +
-			(st.uptime && st.uptime != '0' ? metaItem('时长', fmtDur(st.uptime)) : '') +
 			'</div>';
 		if (st.account && !$('vps-account').value)
 			$('vps-account').value = st.account;
