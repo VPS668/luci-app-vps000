@@ -1,0 +1,49 @@
+#!/bin/sh
+# WAN/VPN ifup: reapply routes. VPN ifdown while still wanted: leak-protect.
+
+[ "$ACTION" = ifup ] || [ "$ACTION" = ifupdate ] || [ "$ACTION" = ifdown ] || exit 0
+
+enable=$(uci -q get vps000.main.enable)
+want=$(uci -q get vps000.main.want)
+
+should_autostart() {
+	[ "$enable" = "1" ]
+}
+
+connecting() {
+	ts=$(cat /var/run/vps000/connecting.ts 2>/dev/null)
+	now=$(date +%s)
+	if [ -n "$ts" ] && [ $((now - ts)) -lt 30 ] 2>/dev/null; then
+		return 0
+	fi
+	pid=$(cat /var/run/vps000/connect.job 2>/dev/null) || return 1
+	case "$pid" in
+		[1-9]*) kill -0 "$pid" 2>/dev/null ;;
+		*) return 1 ;;
+	esac
+}
+
+case "$INTERFACE" in
+	wan|wan6)
+		if [ "$ACTION" = ifdown ]; then
+			exit 0
+		fi
+		if [ -d /sys/class/net/vpn-vps000 ]; then
+			connecting && exit 0
+			/usr/sbin/vps000 routes >/dev/null 2>&1 &
+		elif [ "$ACTION" = ifup ] && should_autostart && ! connecting; then
+			# ifupdate (e.g. default route bouncing during switch) must not
+			# start a second connect alongside the UI/watch connect.
+			/usr/sbin/vps000 autostart >/dev/null 2>&1 &
+		fi
+		;;
+	vps000)
+		if [ "$ACTION" = ifdown ]; then
+			[ "$want" = "1" ] && /usr/sbin/vps000 routes >/dev/null 2>&1 &
+		elif connecting; then
+			exit 0
+		else
+			/usr/sbin/vps000 routes >/dev/null 2>&1 &
+		fi
+		;;
+esac

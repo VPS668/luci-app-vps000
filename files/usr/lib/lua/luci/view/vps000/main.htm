@@ -1,0 +1,690 @@
+<%#
+	VPS000 VPN page
+-%>
+<%+header%>
+
+<style type="text/css">
+	#vps000-app { max-width: 860px; }
+	#vps000-app .vps-head { margin: 0 0 16px; }
+	#vps000-app .vps-head h2 { margin: 0 0 4px; }
+	#vps000-app .vps-sub { color: #5d6d7e; margin: 0; font-size: 13px; }
+
+	#vps000-app .vps-hero {
+		margin: 0 0 16px;
+		padding: 16px 18px;
+		border-radius: 10px;
+		background: #fff;
+		border: 1px solid #e1e6eb;
+		overflow: hidden;
+	}
+	#vps000-app .vps-hero.vps-ok { background: #f3fbf6; border-color: #c8ead6; }
+	#vps000-app .vps-hero.vps-wait { background: #fff9f0; border-color: #f6ddb0; }
+	#vps000-app .vps-hero.vps-err { background: #fdf4f3; border-color: #f5c6c2; }
+
+	#vps000-app .vps-hero-top { overflow: hidden; margin: 0 0 12px; }
+	#vps000-app .vps-dot {
+		float: left;
+		width: 10px;
+		height: 10px;
+		margin: 6px 10px 0 0;
+		border-radius: 50%;
+		background: #8aa0b3;
+	}
+	#vps000-app .vps-ok .vps-dot { background: #27ae60; }
+	#vps000-app .vps-wait .vps-dot { background: #f39c12; }
+	#vps000-app .vps-err .vps-dot { background: #e74c3c; }
+	#vps000-app .vps-state {
+		font-size: 18px;
+		font-weight: 600;
+		color: #1e2d3b;
+		line-height: 22px;
+	}
+
+	#vps000-app .vps-meta { overflow: hidden; margin: 0 -6px; }
+	#vps000-app .vps-meta-item {
+		float: left;
+		width: 25%;
+		box-sizing: border-box;
+		padding: 0 6px 8px;
+		min-height: 42px;
+	}
+	#vps000-app .vps-k {
+		display: block;
+		font-size: 11px;
+		color: #8aa0b3;
+		margin: 0 0 2px;
+	}
+	#vps000-app .vps-v { color: #1e2d3b; font-size: 13px; word-break: break-all; }
+
+	#vps000-app .vps-msg { min-height: 1.2em; margin: 0 0 14px; color: #5d6d7e; }
+	#vps000-app .vps-msg-ok { color: #27ae60; }
+	#vps000-app .vps-msg-err { color: #e74c3c; }
+
+	#vps000-app .vps-grid { overflow: hidden; margin: 0 -8px 8px; }
+	#vps000-app .vps-col { float: left; width: 42%; box-sizing: border-box; padding: 0 8px; }
+	#vps000-app .vps-col-wide { width: 58%; }
+
+	#vps000-app .vps-card {
+		background: #fff;
+		border: 1px solid #e1e6eb;
+		border-radius: 10px;
+		padding: 16px;
+		margin: 0 0 16px;
+		min-height: 280px;
+	}
+	#vps000-app .vps-card h3 {
+		margin: 0 0 14px;
+		padding: 0 0 10px;
+		border-bottom: 1px solid #eef2f5;
+		font-size: 14px;
+	}
+	#vps000-app .vps-card-h { overflow: hidden; margin: 0 0 12px; padding: 0 0 10px; border-bottom: 1px solid #eef2f5; }
+	#vps000-app .vps-card-h h3 { float: left; margin: 0; padding: 0; border: 0; line-height: 28px; }
+	#vps000-app .vps-card-h .cbi-button { float: right; }
+	#vps000-app .vps-line-msg {
+		display: block;
+		overflow: hidden;
+		line-height: 28px;
+		padding: 0 10px;
+		font-size: 12px;
+		color: #5d6d7e;
+		text-align: center;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+	#vps000-app .vps-line-msg.vps-msg-ok { color: #27ae60; }
+	#vps000-app .vps-line-msg.vps-msg-err { color: #e74c3c; }
+
+	#vps000-app .vps-field { margin: 0 0 12px; }
+	#vps000-app .vps-field label { display: block; margin: 0 0 6px; font-weight: 600; color: #1e2d3b; }
+	#vps000-app .vps-field input[type=text],
+	#vps000-app .vps-field input[type=password] {
+		width: 100%;
+		box-sizing: border-box;
+	}
+	#vps000-app .vps-hint { display: block; margin-top: 4px; color: #8aa0b3; font-size: 12px; }
+
+	#vps000-app .vps-opt { margin: 12px 0 0; }
+	#vps000-app .vps-toggle {
+		padding: 10px 0;
+		border-top: 1px solid #eef2f5;
+		overflow: hidden;
+	}
+	#vps000-app .vps-toggle label { font-weight: 600; color: #1e2d3b; }
+	#vps000-app .vps-toggle input { margin-right: 6px; }
+
+	#vps000-app .vps-exits { list-style: none; margin: 0; padding: 0; }
+	#vps000-app .vps-exits li {
+		padding: 8px 10px;
+		margin: 0 0 8px;
+		border: 1px solid #e1e6eb;
+		border-radius: 8px;
+		background: #f8f9fa;
+		overflow: hidden;
+	}
+	#vps000-app .vps-exits li:hover { border-color: #3498db; background: #fff; }
+	#vps000-app .vps-exits li.vps-on {
+		background: #e8f4fc;
+		border-color: #3498db;
+		color: #1e2d3b;
+		font-weight: 600;
+	}
+	#vps000-app .vps-exits .vps-name {
+		float: left;
+		line-height: 28px;
+		padding-right: 8px;
+	}
+	#vps000-app .vps-exits .vps-act {
+		float: right;
+		min-width: 88px;
+		margin: 0;
+	}
+
+	#vps000-app .vps-bar {
+		padding: 12px 0 4px;
+		overflow: hidden;
+	}
+	#vps000-app .vps-exits + .vps-bar,
+	#vps000-app .vps-hint + .vps-bar {
+		margin-top: 8px;
+		padding-top: 12px;
+		border-top: 1px solid #eef2f5;
+	}
+	#vps000-app .vps-bar .cbi-button { min-width: 110px; margin-right: 8px; margin-bottom: 8px; }
+
+	#vps000-app .vps-field select {
+		width: 100%;
+		box-sizing: border-box;
+		height: 32px;
+	}
+	#vps000-app .vps-paybox {
+		margin-top: 10px;
+		padding: 10px 12px;
+		background: #f8f9fa;
+		border-radius: 8px;
+		word-break: break-all;
+	}
+	#vps000-app .vps-paybox a { color: #3498db; }
+
+	@media screen and (max-width: 720px) {
+		#vps000-app .vps-col,
+		#vps000-app .vps-col-wide,
+		#vps000-app .vps-meta-item { width: 50%; }
+		#vps000-app .vps-card { min-height: 0; }
+	}
+	@media screen and (max-width: 480px) {
+		#vps000-app .vps-col,
+		#vps000-app .vps-col-wide,
+		#vps000-app .vps-meta-item { width: 100%; }
+	}
+</style>
+
+<div id="vps000-app">
+	<div class="vps-head">
+		<h2 name="content">VPN</h2>
+		<p class="vps-sub">账号登录后选择线路连接。分流时国内直连、海外走隧道。</p>
+	</div>
+
+	<div id="vps-status" class="vps-hero">正在读取状态…</div>
+	<div id="vps-msg" class="vps-msg"></div>
+
+	<div class="vps-grid">
+		<div class="vps-col">
+			<div class="vps-card">
+				<h3>账号</h3>
+				<div class="vps-field">
+					<label for="vps-account">账号</label>
+					<input id="vps-account" type="text" autocomplete="username" />
+				</div>
+				<div class="vps-field">
+					<label for="vps-password">密码</label>
+					<input id="vps-password" type="password" autocomplete="current-password" />
+					<span class="vps-hint">已保存过则可留空</span>
+				</div>
+				<div class="vps-opt">
+					<div class="vps-toggle">
+						<label><input type="checkbox" id="vps-enable" /> 开机连接</label>
+						<span class="vps-hint">WAN 就绪后自动连接</span>
+					</div>
+					<div class="vps-toggle">
+						<label><input type="checkbox" id="vps-split" checked="checked" /> 分流模式</label>
+						<span class="vps-hint">国内直连，海外走隧道</span>
+					</div>
+					<div class="vps-toggle">
+						<label><input type="checkbox" id="vps-ks" checked="checked" /> 防泄露</label>
+						<span class="vps-hint">未主动断开时拦截海外出口</span>
+					</div>
+				</div>
+			</div>
+		</div>
+		<div class="vps-col vps-col-wide">
+			<div class="vps-card">
+				<div class="vps-card-h">
+					<h3>线路</h3>
+					<input type="button" class="cbi-button" id="vps-refresh" value="刷新" />
+					<span id="vps-line-msg" class="vps-line-msg"></span>
+				</div>
+				<div id="vps-empty" class="vps-hint">正在读取可登录节点…</div>
+				<ul class="vps-exits" id="vps-list" style="display:none"></ul>
+			</div>
+		</div>
+	</div>
+
+	<div class="vps-card">
+		<div class="vps-card-h">
+			<h3>账户与续费</h3>
+			<input type="button" class="cbi-button" id="vps-acc-refresh" value="刷新" />
+		</div>
+		<div id="vps-acc-meta" class="vps-meta">
+			<div class="vps-hint">填写账号后点击刷新，读取到期时间与套餐。</div>
+		</div>
+		<div class="vps-field">
+			<label for="vps-plan">续费套餐</label>
+			<select id="vps-plan"></select>
+			<span class="vps-hint">会员期内只能续同档；支付宝或 PayPal 打开支付链接。</span>
+		</div>
+		<div class="vps-bar">
+			<input type="button" class="cbi-button cbi-button-apply" id="vps-pay-ali" value="支付宝续费" />
+			<input type="button" class="cbi-button" id="vps-pay-pp" value="PayPal续费" />
+			<input type="button" class="cbi-button" id="vps-pay-query" value="查询支付" />
+			<input type="button" class="cbi-button cbi-button-reset" id="vps-logoff" value="强制下线其他设备" />
+		</div>
+		<div id="vps-pay-box"></div>
+	</div>
+</div>
+
+<script type="text/javascript">//<![CDATA[
+(function() {
+	var U_STATUS = '<%=luci.dispatcher.build_url("admin", "vps000", "status")%>';
+	var U_LOGIN = '<%=luci.dispatcher.build_url("admin", "vps000", "login")%>';
+	var U_DISC = '<%=luci.dispatcher.build_url("admin", "vps000", "disconnect")%>';
+	var U_SAVE = '<%=luci.dispatcher.build_url("admin", "vps000", "save")%>';
+	var U_NODES = '<%=luci.dispatcher.build_url("admin", "vps000", "nodes")%>';
+	var U_ACCOUNT = '<%=luci.dispatcher.build_url("admin", "vps000", "account")%>';
+	var U_ORDER = '<%=luci.dispatcher.build_url("admin", "vps000", "order")%>';
+	var U_ORDER_ST = '<%=luci.dispatcher.build_url("admin", "vps000", "order_status")%>';
+	var U_LOGOFF = '<%=luci.dispatcher.build_url("admin", "vps000", "logoff")%>';
+	var pollMs = 4000;
+	var timer = null;
+	var busy = false;
+	var selectedNode = '';
+	var nodeReady = false;
+	var liveNode = '';
+	var cfgReady = false;
+
+	function $(id) { return document.getElementById(id); }
+
+	function post(url, data, cb) {
+		var x = new XMLHttpRequest();
+		var body = [];
+		var k;
+		x.open('POST', url, true);
+		x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+		x.onreadystatechange = function() {
+			if (x.readyState == 4) cb(x.status, x.responseText);
+		};
+		for (k in data) {
+			if (data.hasOwnProperty(k) && data[k] !== null && data[k] !== undefined)
+				body.push(encodeURIComponent(k) + '=' + encodeURIComponent(data[k]));
+		}
+		x.send(body.join('&'));
+	}
+
+	function parse(t) {
+		try { return eval('(' + t + ')'); } catch (e) { return null; }
+	}
+
+	function fields(opts) {
+		var d = {
+			account: $('vps-account').value,
+			password: $('vps-password').value
+		};
+		if (opts && opts.flags === false) {
+			d.flags = '0';
+		} else if (cfgReady) {
+			d.enable = $('vps-enable').checked ? '1' : '0';
+			d.split = $('vps-split').checked ? '1' : '0';
+			d.killswitch = $('vps-ks').checked ? '1' : '0';
+		} else {
+			d.flags = '0';
+		}
+		if ((!opts || opts.node !== false) && nodeReady && selectedNode)
+			d.node = selectedNode;
+		return d;
+	}
+
+	function setMsg(text, ok) {
+		var el = $('vps-msg');
+		el.className = 'vps-msg' + (ok === true ? ' vps-msg-ok' : (ok === false ? ' vps-msg-err' : ''));
+		el.innerHTML = text || '';
+	}
+
+	function setLineMsg(text, ok) {
+		var el = $('vps-line-msg');
+		if (!el) return;
+		el.className = 'vps-line-msg' + (ok === true ? ' vps-msg-ok' : (ok === false ? ' vps-msg-err' : ''));
+		el.innerHTML = text || '';
+		el.title = text || '';
+	}
+
+	function metaItem(k, v) {
+		return '<div class="vps-meta-item"><span class="vps-k">' + k + '</span><span class="vps-v">' + (v || '—') + '</span></div>';
+	}
+
+	function fmtDur(sec) {
+		var n = parseInt(sec, 10) || 0;
+		var h = Math.floor(n / 3600);
+		var m = Math.floor((n % 3600) / 60);
+		var s = n % 60;
+		function pad(v) { return (v < 10 ? '0' : '') + v; }
+		return h > 0 ? (h + ':' + pad(m) + ':' + pad(s)) : (pad(m) + ':' + pad(s));
+	}
+
+	var lastState = 'off';
+	var lastSt = null;
+	var holdExit = false;
+
+	function exitText(st, state) {
+		if (state != 'up') return '—';
+		if (!st || !st.ip) return '检测中…';
+		if (st.loc) return st.ip + ' (' + st.loc + ')';
+		return st.ip;
+	}
+
+	function wipeExit(msg) {
+		holdExit = true;
+		var st = lastSt ? lastSt : {};
+		st.ip = '';
+		st.loc = '';
+		st.uptime = '0';
+		st.state = 'pending';
+		st.pending = 1;
+		st.connected = 0;
+		if (msg) st.msg = msg;
+		paint(st);
+	}
+
+	function paint(st, fromNet) {
+		if (holdExit && st) {
+			var raw = st.state;
+			st.ip = '';
+			st.loc = '';
+			st.uptime = '0';
+			if (st.state == 'up') {
+				st.state = 'pending';
+				st.connected = 0;
+				if (!st.msg || st.msg == '已连接') st.msg = '正在连接';
+			}
+			if (fromNet && raw != 'up')
+				holdExit = false;
+		}
+		var box = $('vps-status');
+		var state = (st && st.state) || 'off';
+		lastState = state;
+		lastSt = st;
+		var cls = 'vps-hero';
+		if (state == 'up') cls += ' vps-ok';
+		else if (state == 'pending') cls += ' vps-wait';
+		else if (state == 'err') cls += ' vps-err';
+		box.className = cls;
+		box.innerHTML = '<div class="vps-hero-top"><span class="vps-dot"></span><div class="vps-state">' + (st.msg || '未连接') + '</div></div>' +
+			'<div class="vps-meta">' +
+			metaItem('账号', st.account) +
+			metaItem('线路', st.region || st.node) +
+			metaItem('协议', st.proto || 'anyconnect') +
+			metaItem('出口', exitText(st, state)) +
+			(st.plan ? metaItem('套餐', st.plan) : '') +
+			(st.expire ? metaItem('到期', st.expire) : '') +
+			(st.uptime && st.uptime != '0' ? metaItem('时长', fmtDur(st.uptime)) : '') +
+			'</div>';
+		if (st.account && !$('vps-account').value)
+			$('vps-account').value = st.account;
+		if (fromNet) {
+			$('vps-enable').checked = (st.enable == '1' || st.enable == 1);
+			if (st.split == '0' || st.split == 0) $('vps-split').checked = false;
+			else $('vps-split').checked = true;
+			if (st.killswitch == '0' || st.killswitch == 0) $('vps-ks').checked = false;
+			else $('vps-ks').checked = true;
+			cfgReady = true;
+		}
+		if (state == 'up' && st.node) {
+			liveNode = st.node;
+			if (!nodeReady) {
+				selectedNode = st.node;
+				nodeReady = true;
+			}
+		} else if (state != 'pending') {
+			liveNode = '';
+		}
+		paintNodeActions();
+		pollMs = (state == 'pending') ? 2000 : 5000;
+	}
+
+	function paintNodeActions() {
+		var list = $('vps-list');
+		var items, i, id, btn, on, cls;
+		if (!list) return;
+		items = list.getElementsByTagName('li');
+		for (i = 0; i < items.length; i++) {
+			id = items[i].getAttribute('data-id');
+			btn = items[i].getElementsByTagName('input')[0];
+			if (!btn) continue;
+			on = (lastState == 'up' && liveNode == id) ||
+				(lastState == 'pending' && selectedNode == id);
+			items[i].className = on ? 'vps-on' : '';
+			btn.disabled = !!busy;
+			if (lastState == 'up' && liveNode == id) {
+				btn.value = '断开';
+				cls = 'cbi-button cbi-button-reset vps-act';
+			} else if (lastState == 'up' || lastState == 'pending') {
+				btn.value = '切换线路';
+				cls = 'cbi-button vps-act';
+			} else {
+				btn.value = '连接';
+				cls = 'cbi-button cbi-button-apply vps-act';
+			}
+			if (lastState == 'pending' && selectedNode == id) {
+				btn.value = busy ? '连接中…' : '断开';
+				cls = 'cbi-button cbi-button-reset vps-act';
+			}
+			btn.className = cls;
+		}
+	}
+
+	function renderNodes(data) {
+		var list = $('vps-list');
+		var empty = $('vps-empty');
+		var nodes = (data && data.nodes) || [];
+		var i, li, name, btn;
+		list.innerHTML = '';
+		if (!nodes.length) {
+			empty.style.display = 'block';
+			empty.innerHTML = '没有可用节点，将使用默认香港线路';
+			list.style.display = 'none';
+			return;
+		}
+		empty.style.display = 'none';
+		list.style.display = 'block';
+		if (!nodeReady && data.node) {
+			selectedNode = data.node;
+			nodeReady = true;
+		}
+		for (i = 0; i < nodes.length; i++) {
+			li = document.createElement('li');
+			li.setAttribute('data-id', nodes[i].id);
+			name = document.createElement('span');
+			name.className = 'vps-name';
+			name.appendChild(document.createTextNode(nodes[i].name || nodes[i].id));
+			btn = document.createElement('input');
+			btn.type = 'button';
+			btn.className = 'cbi-button cbi-button-apply vps-act';
+			btn.value = '连接';
+			btn.onclick = (function(id) {
+				return function(ev) {
+					if (ev && ev.stopPropagation) ev.stopPropagation();
+					onNodeAction(id);
+				};
+			})(nodes[i].id);
+			li.appendChild(name);
+			li.appendChild(btn);
+			list.appendChild(li);
+		}
+		paintNodeActions();
+	}
+
+	function doDisconnect(cb) {
+		busy = true;
+		wipeExit('正在断开…');
+		paintNodeActions();
+		setLineMsg('正在断开…');
+		post(U_DISC, {}, function(code, text) {
+			busy = false;
+			var st = parse(text);
+			setLineMsg((st && st.msg) || '已断开', true);
+			refresh();
+			if (cb) cb();
+		});
+	}
+
+	function doConnect(id, switching) {
+		if (!$('vps-account').value) { setLineMsg('请填写账号', false); return; }
+		selectedNode = id;
+		nodeReady = true;
+		busy = true;
+		wipeExit(switching ? '正在切换线路…' : '正在连接…');
+		paintNodeActions();
+		setLineMsg(switching ? '正在切换线路…' : '正在连接…');
+		post(U_LOGIN, fields(), function(code, text) {
+			busy = false;
+			var st = parse(text);
+			if (st && st.ok) setLineMsg(st.msg || (switching ? '正在切换' : '正在连接'), true);
+			else setLineMsg((st && st.msg) || '连接请求失败', false);
+			refresh();
+		});
+	}
+
+	function onNodeAction(id) {
+		if (busy) return;
+		if ((lastState == 'up' && liveNode == id) ||
+			(lastState == 'pending' && selectedNode == id)) {
+			doDisconnect();
+			return;
+		}
+		if (lastState == 'pending') {
+			doConnect(id, true);
+			return;
+		}
+		doConnect(id, lastState == 'up');
+	}
+
+	function loadNodes(force) {
+		var data = force ? { refresh: '1' } : {};
+		if (force) {
+			$('vps-empty').style.display = 'block';
+			$('vps-empty').innerHTML = '正在刷新节点…';
+			setLineMsg('正在刷新节点…');
+		}
+		post(U_NODES, data, function(code, text) {
+			var st = parse(text);
+			if (st) {
+				renderNodes(st);
+				if (force) setLineMsg('节点已更新', true);
+			} else {
+				$('vps-empty').innerHTML = '节点列表读取失败，可仍用默认线路连接';
+				$('vps-empty').style.display = 'block';
+				if (force) setLineMsg('节点列表读取失败', false);
+			}
+		});
+	}
+
+	function refresh() {
+		post(U_STATUS, {}, function(code, text) {
+			var st = parse(text);
+			if (st) paint(st, true);
+			else $('vps-status').innerHTML = '无法读取状态';
+		});
+	}
+
+	function schedule() {
+		if (timer) window.clearTimeout(timer);
+		timer = window.setTimeout(function() { refresh(); schedule(); }, pollMs);
+	}
+
+	function saveQuiet() {
+		post(U_SAVE, fields(), function() {});
+	}
+	$('vps-enable').onclick = saveQuiet;
+	$('vps-split').onclick = saveQuiet;
+	$('vps-ks').onclick = saveQuiet;
+	$('vps-refresh').onclick = function() { loadNodes(true); };
+
+	var lastOrder = '';
+	var accLoaded = false;
+
+	function paintAccount(acc) {
+		var box = $('vps-acc-meta');
+		var sel = $('vps-plan');
+		var i, p, opt, html;
+		if (!acc || !acc.ok) {
+			if (accLoaded) return;
+			box.innerHTML = '<div class="vps-hint">账户信息暂未获取</div>';
+			return;
+		}
+		html = metaItem('账号', acc.username) +
+			metaItem('套餐', acc.plan) +
+			metaItem('到期', acc.end_time) +
+			metaItem('状态', acc.expired == '1' ? '已到期' : '有效');
+		box.innerHTML = html;
+		sel.innerHTML = '';
+		for (i = 0; acc.products && i < acc.products.length; i++) {
+			p = acc.products[i];
+			opt = document.createElement('option');
+			opt.value = p.id;
+			opt.appendChild(document.createTextNode(p.name + '  ¥' + p.alipay + ' / $' + p.paypal));
+			sel.appendChild(opt);
+		}
+		if (!sel.options.length) {
+			opt = document.createElement('option');
+			opt.value = '';
+			opt.appendChild(document.createTextNode('当前没有可续费套餐'));
+			sel.appendChild(opt);
+		}
+		accLoaded = true;
+	}
+
+	function loadAccount(manual) {
+		if (manual === true) setMsg('正在刷新账户…');
+		if (!accLoaded)
+			$('vps-acc-meta').innerHTML = '<div class="vps-hint">正在读取账户…</div>';
+		post(U_ACCOUNT, fields({ node: false, flags: false }), function(code, text) {
+			var acc = parse(text);
+			if (acc && acc.ok) {
+				paintAccount(acc);
+				if (manual === true && acc.stale != '1' && acc.stale != 1)
+					setMsg('账户已刷新', true);
+				else if (manual === true)
+					setMsg('未能更新，仍显示上次结果');
+			} else if (!accLoaded) {
+				paintAccount(acc);
+			}
+		});
+	}
+
+	function placeOrder(payType) {
+		var pid = $('vps-plan').value;
+		if (!pid) { setMsg('请选择套餐', false); return; }
+		setMsg(payType == '1' ? '正在创建支付宝订单…' : '正在创建 PayPal 订单…');
+		post(U_ORDER, { product_id: pid, pay_type: payType, month: '1' }, function(code, text) {
+			var st = parse(text);
+			if (!st || !st.ok) {
+				setMsg((st && st.msg) || '下单失败', false);
+				return;
+			}
+			lastOrder = st.order_no || '';
+			$('vps-pay-box').className = 'vps-paybox';
+			$('vps-pay-box').innerHTML = '订单 ' + lastOrder +
+				' <a href="' + st.pay_url + '" target="_blank">打开支付页面</a>';
+			setMsg('订单已创建，请完成支付后点查询支付', true);
+		});
+	}
+
+	function queryPay() {
+		var data = lastOrder ? { order_no: lastOrder } : {};
+		setMsg('正在查询支付…');
+		post(U_ORDER_ST, data, function(code, text) {
+			var st = parse(text);
+			if (!st || !st.ok) {
+				setMsg((st && st.msg) || '查询失败', false);
+				return;
+			}
+			if (st.pay_status == '1' || st.pay_status == 1) {
+				setMsg('支付成功', true);
+				loadAccount();
+			} else {
+				setMsg('尚未支付（状态 ' + st.pay_status + '）', false);
+			}
+		});
+	}
+
+	$('vps-acc-refresh').onclick = function() { loadAccount(true); };
+	$('vps-pay-ali').onclick = function() { placeOrder('1'); };
+	$('vps-pay-pp').onclick = function() { placeOrder('2'); };
+	$('vps-pay-query').onclick = queryPay;
+	$('vps-logoff').onclick = function() {
+		if (!confirm('将强制下线同账号其他客户端。本机若在线会自动重连。继续？')) return;
+		setMsg('正在请求强制下线…');
+		post(U_LOGOFF, {}, function(code, text) {
+			var st = parse(text);
+			setMsg((st && st.msg) || '已请求下线', !!(st && st.ok));
+			refresh();
+		});
+	};
+
+	loadNodes();
+	refresh();
+	schedule();
+	setTimeout(function() { loadAccount(false); }, 400);
+})();
+//]]></script>
+
+<%+footer%>

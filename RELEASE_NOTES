@@ -1,0 +1,7 @@
+## 1.3.1
+
+- 增加 GitHub 在线更新：检查 Release、安装软件包或整包固件
+- 连接互斥：切换线路不再用 pending 覆盖正在进行的 connect
+- 连接过程中不再反复重启 dnsmasq
+- 重连达到上限后停止死循环
+- 防火墙仅在首次把 VPN 加入 wan zone 时 reload

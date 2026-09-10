@@ -1,0 +1,11 @@
+#!/bin/sh
+# Clear baked chnroute UCI from older images. Runtime DNS is
+# /tmp/dnsmasq.d/vps000.conf (written by /usr/sbin/vps000).
+uci -q delete dhcp.@dnsmasq[0].server
+uci -q delete dhcp.@dnsmasq[0].chnroute
+uci -q delete dhcp.@dnsmasq[0].chnroutesfile
+uci -q delete dhcp.@dnsmasq[0].noresolv
+uci -q delete dhcp.@dnsmasq[0].allservers
+uci -q set dhcp.@dnsmasq[0].resolvfile='/tmp/resolv.conf.auto'
+uci -q commit dhcp
+exit 0

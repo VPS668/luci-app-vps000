@@ -1,0 +1,15 @@
+#!/bin/sh
+[ -x /etc/init.d/vps000 ] && /etc/init.d/vps000 enable >/dev/null 2>&1 || true
+uci -q get vps000.main.node >/dev/null || uci -q set vps000.main.node=hkg
+uci -q get vps000.main.killswitch >/dev/null || uci -q set vps000.main.killswitch=1
+uci -q commit vps000
+
+if ! uci -q get firewall.vps000_ks.path >/dev/null; then
+	uci set firewall.vps000_ks=include
+	uci set firewall.vps000_ks.path=/usr/share/vps000/killswitch.fw
+	uci set firewall.vps000_ks.reload=1
+	uci commit firewall
+fi
+
+rm -f /tmp/luci-indexcache /tmp/luci-modulecache >/dev/null 2>&1 || true
+exit 0

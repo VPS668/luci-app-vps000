@@ -1,0 +1,599 @@
+#!/bin/sh
+# GitHub Release updater for luci-app-vps000 (manifest.json + ipk / sysupgrade).
+# Mirrors the luci-app-nsclient check/apply flow for Barrier Breaker.
+
+PKG_NAME=luci-app-vps000
+VER_FILE=/usr/share/vps000/version
+CACHE=/tmp/vps000-update.json
+LOCK=/tmp/vps000-update.lock
+PROGRESS=/tmp/vps000-update.progress
+CANCEL=/tmp/vps000-update.cancel
+DL_PID=/tmp/vps000-update.dl.pid
+IPK_DEST=/tmp/vps000-update.ipk
+FW_DEST=/tmp/vps000-firmware.bin
+BODY=/tmp/vps000-update.body
+DEFAULT_REPO=vps668/luci-app-vps000
+UA=vps000-update
+
+json_escape() {
+	printf '%s' "$1" | tr '\r' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' '
+}
+
+read_kv() {
+	sed -n "s/^${1}=//p" "$VER_FILE" 2>/dev/null | head -1
+}
+
+repo_slug() {
+	local r
+	r=$(read_kv VPS000_REPO)
+	[ -n "$r" ] || r=$DEFAULT_REPO
+	printf '%s' "$r"
+}
+
+local_pkg_ver() {
+	local v ctrl="/usr/lib/opkg/info/${PKG_NAME}.control"
+	v=$(grep '^Version:' "$ctrl" 2>/dev/null | awk '{print $2}')
+	[ -n "$v" ] || v=$(read_kv VPS000_VERSION)
+	printf '%s' "$v"
+}
+
+local_fw_ver() {
+	read_kv VPS000_VERSION
+}
+
+local_board() {
+	local b
+	b=$(cat /tmp/sysinfo/board_name 2>/dev/null)
+	[ -n "$b" ] || b=$(read_kv VPS000_BOARD)
+	[ -n "$b" ] || b=mt7628
+	printf '%s' "$b"
+}
+
+ver_norm() {
+	printf '%s' "$1" | sed 's/^[Vv]//' | tr -cs '0-9' '.' | sed 's/^\.//;s/\.$//'
+}
+
+ver_gt() {
+	local a b
+	a=$(ver_norm "$1")
+	b=$(ver_norm "$2")
+	[ -n "$a" ] || return 1
+	[ -n "$b" ] || return 0
+	awk -v a="$a" -v b="$b" 'BEGIN {
+		n = split(a, A, "."); m = split(b, B, ".");
+		k = (n > m) ? n : m;
+		for (i = 1; i <= k; i++) {
+			x = A[i] + 0; y = B[i] + 0;
+			if (x > y) exit 0;
+			if (x < y) exit 1;
+		}
+		exit 1
+	}'
+}
+
+pid_alive() {
+	[ -n "$1" ] && [ -d "/proc/$1" ]
+}
+
+job_running() {
+	local pid
+	pid=$(cat "$LOCK" 2>/dev/null)
+	pid_alive "$pid"
+}
+
+lock_me() {
+	if job_running; then
+		return 1
+	fi
+	echo $$ > "$LOCK"
+	return 0
+}
+
+unlock_me() {
+	rm -f "$LOCK"
+}
+
+wan_gw() {
+	ip -4 route show default 2>/dev/null | awk '/via/ && $0 !~ /vpn-vps000/ {for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit }}'
+}
+
+wan_dev() {
+	ip -4 route show default 2>/dev/null | awk '/via/ && $0 !~ /vpn-vps000/ {for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}'
+}
+
+resolve_ipv4() {
+	local host="$1" ip
+	case "$host" in
+		[0-9]*.[0-9]*.[0-9]*.[0-9]*) printf '%s' "$host"; return 0 ;;
+	esac
+	ip=$(resolveip -t 8 "$host" 2>/dev/null | awk '/^[0-9]+\./ {print $1; exit}')
+	[ -n "$ip" ] || ip=$(nslookup "$host" 2>/dev/null | awk '/^Address 1:/{print $3; exit}')
+	[ -n "$ip" ] || ip=$(nslookup "$host" 2>/dev/null | awk '/^Address: / && $2 !~ /#/ {print $2; exit}')
+	[ -n "$ip" ] && printf '%s' "$ip"
+}
+
+# Do not touch vps000 endpoint_ip.
+pin_wan() {
+	local host ip gw dev
+	host="$1"
+	ip=$(resolve_ipv4 "$host") || return 0
+	gw=$(wan_gw)
+	dev=$(wan_dev)
+	[ -n "$ip" ] && [ -n "$gw" ] && [ -n "$dev" ] || return 0
+	ip -4 route replace "$ip/32" via "$gw" dev "$dev" 2>/dev/null || true
+}
+
+pin_update_hosts() {
+	local h
+	for h in github.com api.github.com objects.githubusercontent.com \
+		release-assets.githubusercontent.com ghproxy.net gh-proxy.com \
+		ghfast.top kkgithub.com hub.gitmirror.com; do
+		pin_wan "$h"
+	done
+}
+
+curl_get() {
+	local url="$1" dest="$2" extra=""
+	case "$url" in
+		*api.github.com*) extra='-H Accept: application/vnd.github+json' ;;
+	esac
+	rm -f "$dest"
+	curl -4 -k -fsSL --connect-timeout 6 --max-time 20 \
+		-A "$UA" $extra -o "$dest" -- "$url" >/dev/null 2>&1
+	[ -s "$dest" ]
+}
+
+valid_body() {
+	[ -s "$1" ] || return 1
+	grep -q '"tag_name"\|"vps000"\|"firmware"\|"tag"' "$1"
+}
+
+apply_line() {
+	local url="$1" line="$2"
+	case "$line" in
+		direct) printf '%s' "$url" ;;
+		kkgithub) printf '%s' "$url" | sed 's#https://github.com/#https://kkgithub.com/#' ;;
+		*) printf '%s%s' "$line" "$url" ;;
+	esac
+}
+
+line_ids() {
+	printf '%s\n' \
+		direct \
+		https://ghproxy.net/ \
+		https://gh-proxy.com/ \
+		https://ghfast.top/ \
+		https://hub.gitmirror.com/ \
+		https://gh.llkk.cc/ \
+		kkgithub
+}
+
+asset_url() {
+	local repo tag name
+	repo=$(repo_slug)
+	tag="$1"
+	name="$2"
+	[ -n "$tag" ] && [ -n "$name" ] || return 1
+	printf 'https://github.com/%s/releases/download/%s/%s' "$repo" "$tag" "$name"
+}
+
+parse_and_write() {
+	local src="$1" err="$2" phase="$3"
+	local tag notes pkg_ver pkg_file pkg_url pkg_sha fw_ver fw_file fw_url fw_sha fw_board
+	local pkg_newer fw_newer fw_ok name url
+	local repo lv_pkg lv_fw board
+
+	repo=$(repo_slug)
+	lv_pkg=$(local_pkg_ver)
+	lv_fw=$(local_fw_ver)
+	board=$(local_board)
+
+	tag=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.tag' 2>/dev/null)
+	[ -n "$tag" ] || tag=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.tag_name' 2>/dev/null)
+	[ -n "$tag" ] || tag=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.version' 2>/dev/null)
+	notes=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.notes' 2>/dev/null)
+	[ -n "$notes" ] || notes=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.body' 2>/dev/null)
+
+	pkg_ver=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.vps000.version' 2>/dev/null)
+	pkg_file=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.vps000.filename' 2>/dev/null)
+	pkg_url=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.vps000.url' 2>/dev/null)
+	pkg_sha=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.vps000.sha256' 2>/dev/null)
+
+	fw_ver=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.version' 2>/dev/null)
+	fw_file=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.filename' 2>/dev/null)
+	fw_url=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.url' 2>/dev/null)
+	fw_sha=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.sha256' 2>/dev/null)
+	fw_board=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.board' 2>/dev/null)
+
+	# GitHub API assets fallback
+	if [ -z "$pkg_url" ] && [ -z "$fw_url" ]; then
+		while IFS= read -r name; do
+			[ -n "$name" ] || continue
+			url=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e "@.assets[@.name='$name'].browser_download_url" 2>/dev/null)
+			[ -n "$url" ] || continue
+			case "$name" in
+				*.ipk)
+					pkg_file=$name
+					pkg_url=$url
+					pkg_ver=$(printf '%s' "$name" | sed -n 's/^luci-app-vps000_\(.*\)_all\.ipk$/\1/p')
+					;;
+				*sysupgrade*.bin)
+					fw_file=$name
+					fw_url=$url
+					fw_ver=$(printf '%s' "$tag" | sed 's/^[Vv]//')
+					;;
+			esac
+		done <<EOF
+$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.assets[*].name' 2>/dev/null)
+EOF
+	fi
+
+	[ -n "$pkg_url" ] || pkg_url=$(asset_url "$tag" "$pkg_file")
+	[ -n "$fw_url" ] || fw_url=$(asset_url "$tag" "$fw_file")
+	[ -n "$pkg_ver" ] && [ -z "$pkg_file" ] && pkg_file="${PKG_NAME}_${pkg_ver}_all.ipk"
+	[ -n "$fw_ver" ] || fw_ver=$(printf '%s' "$tag" | sed 's/^[Vv]//')
+
+	pkg_newer=0
+	fw_newer=0
+	fw_ok=0
+	if [ -n "$pkg_ver" ] && ver_gt "$pkg_ver" "$lv_pkg"; then
+		pkg_newer=1
+	fi
+	case "$fw_file$fw_board" in
+		*mt7628*|*MT7628*) fw_ok=1 ;;
+		*)
+			[ -z "$fw_file" ] && [ -z "$fw_url" ] && fw_ok=0
+			[ -n "$fw_file" ] && printf '%s' "$fw_file" | grep -q sysupgrade && fw_ok=1
+			[ -n "$fw_board" ] && [ "$fw_board" = "$board" ] && fw_ok=1
+			;;
+	esac
+	if [ "$fw_ok" = 1 ] && [ -n "$fw_ver" ] && ver_gt "$fw_ver" "$lv_fw"; then
+		fw_newer=1
+	fi
+
+	umask 022
+	{
+		printf '{"ok":true,"phase":"%s","checked_at":%s,"error":"%s","source":"%s",' \
+			"$phase" "$(date +%s)" "$(json_escape "$err")" "$(json_escape "$src")"
+		printf '"local_ver":{"vps000":"%s","firmware":"%s","board":"%s","repo":"%s"},' \
+			"$(json_escape "$lv_pkg")" "$(json_escape "$lv_fw")" "$(json_escape "$board")" "$(json_escape "$repo")"
+		printf '"remote":{"tag":"%s","notes":"%s",' "$(json_escape "$tag")" "$(json_escape "$notes")"
+		printf '"vps000":{"version":"%s","filename":"%s","url":"%s","sha256":"%s","newer":%s},' \
+			"$(json_escape "$pkg_ver")" "$(json_escape "$pkg_file")" "$(json_escape "$pkg_url")" \
+			"$(json_escape "$pkg_sha")" "$pkg_newer"
+		printf '"firmware":{"version":"%s","filename":"%s","url":"%s","sha256":"%s","board":"%s","compatible":%s,"newer":%s}}}' \
+			"$(json_escape "$fw_ver")" "$(json_escape "$fw_file")" "$(json_escape "$fw_url")" \
+			"$(json_escape "$fw_sha")" "$(json_escape "$fw_board")" "$fw_ok" "$fw_newer"
+		printf '\n'
+	} > "$CACHE.tmp"
+	mv -f "$CACHE.tmp" "$CACHE"
+}
+
+set_phase() {
+	local phase="$1" err="$2" target="$3"
+	local body
+	if [ -s "$CACHE" ]; then
+		body=$(cat "$CACHE")
+		body=$(printf '%s' "$body" | sed "s/\"phase\":\"[^\"]*\"/\"phase\":\"$phase\"/")
+		if [ -n "$err" ]; then
+			if printf '%s' "$body" | grep -q '"error":'; then
+				body=$(printf '%s' "$body" | sed "s/\"error\":\"[^\"]*\"/\"error\":\"$(json_escape "$err")\"/")
+			fi
+		fi
+		printf '%s\n' "$body" > "$CACHE.tmp"
+		mv -f "$CACHE.tmp" "$CACHE"
+	else
+		printf '{"ok":true,"phase":"%s","error":"%s","target":"%s","local_ver":{"vps000":"%s","firmware":"%s","board":"%s","repo":"%s"}}\n' \
+			"$phase" "$(json_escape "$err")" "$(json_escape "$target")" \
+			"$(json_escape "$(local_pkg_ver)")" "$(json_escape "$(local_fw_ver)")" \
+			"$(json_escape "$(local_board)")" "$(json_escape "$(repo_slug)")" > "$CACHE"
+	fi
+}
+
+cmd_status() {
+	local fetching=0
+	job_running && fetching=1
+	if [ ! -s "$CACHE" ]; then
+		printf '{"ok":true,"phase":"idle","error":"","fetching":%s,"local_ver":{"vps000":"%s","firmware":"%s","board":"%s","repo":"%s"}}\n' \
+			"$fetching" "$(json_escape "$(local_pkg_ver)")" "$(json_escape "$(local_fw_ver)")" \
+			"$(json_escape "$(local_board)")" "$(json_escape "$(repo_slug)")"
+		return 0
+	fi
+	if grep -q '"fetching"' "$CACHE"; then
+		cat "$CACHE"
+	else
+		sed 's/^{/{"fetching":'"$fetching"',/' "$CACHE"
+	fi
+	if [ -s "$PROGRESS" ]; then
+		printf '\n'
+	fi
+}
+
+cmd_progress() {
+	if [ -s "$PROGRESS" ]; then
+		awk '{printf "{\"got\":%s,\"total\":%s}\n", $1+0, $2+0}' "$PROGRESS"
+	else
+		echo '{"got":0,"total":0}'
+	fi
+}
+
+cmd_check() {
+	local repo api manifest line url found
+	if ! lock_me; then
+		json_out_busy
+		return 0
+	fi
+	trap 'unlock_me; rm -f "$BODY"' EXIT
+	set_phase checking
+	pin_update_hosts
+	repo=$(repo_slug)
+	api="https://api.github.com/repos/${repo}/releases/latest"
+	manifest="https://github.com/${repo}/releases/latest/download/manifest.json"
+	found=
+	while IFS= read -r line; do
+		[ -n "$line" ] || continue
+		for url in "$(apply_line "$manifest" "$line")" "$(apply_line "$api" "$line")"; do
+			[ -n "$url" ] || continue
+			if curl_get "$url" "$BODY" && valid_body "$BODY"; then
+				found=$url
+				break
+			fi
+		done
+		[ -n "$found" ] && break
+	done <<EOF
+$(line_ids)
+EOF
+	if [ -n "$found" ]; then
+		parse_and_write "$found" "" idle
+		unlock_me
+		trap - EXIT
+		rm -f "$BODY"
+		cat "$CACHE"
+		return 0
+	fi
+	parse_and_write "" github idle
+	# still rewrite error
+	set_phase idle github
+	unlock_me
+	trap - EXIT
+	rm -f "$BODY"
+	cat "$CACHE" 2>/dev/null
+	return 1
+}
+
+json_out_busy() {
+	echo '{"ok":false,"msg":"正在更新","error":"busy","phase":"busy"}'
+}
+
+write_progress() {
+	echo "$1 $2" > "$PROGRESS"
+}
+
+cancel_requested() {
+	[ -f "$CANCEL" ]
+}
+
+kill_dl() {
+	local pid
+	pid=$(cat "$DL_PID" 2>/dev/null)
+	[ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true
+	rm -f "$DL_PID"
+}
+
+download_file() {
+	local url="$1" dest="$2" timeout="$3" expected="$4"
+	local pid n sz last
+	[ -n "$url" ] || return 1
+	timeout=${timeout:-300}
+	expected=${expected:-0}
+	rm -f "$dest" "$CANCEL"
+	write_progress 0 "$expected"
+	pin_update_hosts
+	curl -4 -k -fL --connect-timeout 8 --max-time "$timeout" \
+		-A "$UA" -o "$dest" -- "$url" >/dev/null 2>&1 &
+	pid=$!
+	echo "$pid" > "$DL_PID"
+	n=0
+	last=0
+	while pid_alive "$pid"; do
+		if cancel_requested; then
+			kill -9 "$pid" 2>/dev/null || true
+			wait "$pid" 2>/dev/null || true
+			rm -f "$dest" "$DL_PID" "$PROGRESS"
+			return 2
+		fi
+		sz=$(wc -c < "$dest" 2>/dev/null || echo 0)
+		write_progress "$sz" "$expected"
+		n=$((n + 1))
+		[ "$n" -gt "$timeout" ] && {
+			kill -9 "$pid" 2>/dev/null || true
+			break
+		}
+		sleep 1
+	done
+	wait "$pid" 2>/dev/null
+	rm -f "$DL_PID"
+	[ -s "$dest" ] || return 1
+	sz=$(wc -c < "$dest" 2>/dev/null || echo 0)
+	write_progress "$sz" "$expected"
+	return 0
+}
+
+cache_field() {
+	jsonfilter -i "$CACHE" -e "$1" 2>/dev/null
+}
+
+verify_sha() {
+	local file="$1" want="$2" got
+	[ -n "$want" ] || return 0
+	got=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
+	[ "$got" = "$want" ]
+}
+
+cmd_apply() {
+	local target="$1" url sha rc
+	case "$target" in
+		ipk|vps000|plugin) target=ipk ;;
+		firmware|fw) target=firmware ;;
+		*) echo '{"ok":false,"msg":"请选择 ipk 或 firmware","error":"parse"}'; return 1 ;;
+	esac
+	if ! lock_me; then
+		json_out_busy
+		return 0
+	fi
+	trap 'unlock_me' EXIT
+	[ -s "$CACHE" ] || {
+		unlock_me
+		trap - EXIT
+		echo '{"ok":false,"msg":"请先检查更新","error":"parse"}'
+		return 1
+	}
+	if [ "$target" = ipk ]; then
+		url=$(cache_field '@.remote.vps000.url')
+		sha=$(cache_field '@.remote.vps000.sha256')
+		[ -n "$url" ] || {
+			set_phase error no-vps000
+			unlock_me
+			trap - EXIT
+			echo '{"ok":false,"error":"no-vps000","msg":"此版本没有软件包"}'
+			return 1
+		}
+		set_phase downloading "" ipk
+		if ! download_file "$url" "$IPK_DEST" 120 0; then
+			rc=$?
+			rm -f "$IPK_DEST"
+			if [ "$rc" = 2 ]; then
+				set_phase idle cancelled
+				echo '{"ok":true,"phase":"idle","error":"cancelled"}'
+			else
+				set_phase error download
+				echo '{"ok":false,"error":"download","msg":"下载失败"}'
+			fi
+			unlock_me
+			trap - EXIT
+			return 1
+		fi
+		if ! verify_sha "$IPK_DEST" "$sha"; then
+			rm -f "$IPK_DEST"
+			set_phase error install
+			unlock_me
+			trap - EXIT
+			echo '{"ok":false,"error":"install","msg":"校验失败"}'
+			return 1
+		fi
+		set_phase installing "" ipk
+		opkg install --force-reinstall "$IPK_DEST" >/tmp/vps000-update-opkg.log 2>&1
+		rc=$?
+		rm -f "$IPK_DEST" "$PROGRESS"
+		rm -rf /tmp/luci-indexcache /tmp/luci-modulecache >/dev/null 2>&1 || true
+		if [ "$rc" -ne 0 ]; then
+			set_phase error install
+			unlock_me
+			trap - EXIT
+			echo '{"ok":false,"error":"install","msg":"安装失败"}'
+			return 1
+		fi
+		VPS_KEEP_WANT=1 /etc/init.d/vps000 restart >/dev/null 2>&1 || true
+		/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+		set_phase done "" ipk
+		unlock_me
+		trap - EXIT
+		echo '{"ok":true,"phase":"done","target":"ipk","msg":"软件包已更新"}'
+		return 0
+	fi
+
+	url=$(cache_field '@.remote.firmware.url')
+	sha=$(cache_field '@.remote.firmware.sha256')
+	[ -n "$url" ] || {
+		set_phase error no-firmware
+		unlock_me
+		trap - EXIT
+		echo '{"ok":false,"error":"no-firmware","msg":"此版本没有本机固件"}'
+		return 1
+	}
+	set_phase downloading "" firmware
+	if ! download_file "$url" "$FW_DEST" 600 0; then
+		rc=$?
+		rm -f "$FW_DEST"
+		if [ "$rc" = 2 ]; then
+			set_phase idle cancelled
+			echo '{"ok":true,"phase":"idle","error":"cancelled"}'
+		else
+			set_phase error download
+			echo '{"ok":false,"error":"download","msg":"下载失败"}'
+		fi
+		unlock_me
+		trap - EXIT
+		return 1
+	fi
+	if ! verify_sha "$FW_DEST" "$sha"; then
+		rm -f "$FW_DEST"
+		set_phase error image
+		unlock_me
+		trap - EXIT
+		echo '{"ok":false,"error":"image","msg":"固件校验失败"}'
+		return 1
+	fi
+	if command -v sysupgrade >/dev/null 2>&1; then
+		if sysupgrade -T "$FW_DEST" >/tmp/vps000-update-image.log 2>&1; then
+			:
+		else
+			# Older sysupgrade may not support -T; still try if file looks like a uImage.
+			if ! grep -q 'sysupgrade' /tmp/vps000-update-image.log 2>/dev/null; then
+				true
+			fi
+		fi
+	fi
+	set_phase rebooting "" firmware
+	rm -f "$PROGRESS"
+	unlock_me
+	trap - EXIT
+	(
+		sleep 1
+		killall -q uhttpd 2>/dev/null || true
+		/sbin/sysupgrade "$FW_DEST"
+	) >/dev/null 2>&1 &
+	echo '{"ok":true,"phase":"rebooting","target":"firmware","msg":"正在升级固件，请勿断电"}'
+}
+
+cmd_cancel() {
+	echo 1 > "$CANCEL"
+	kill_dl
+	set_phase idle cancelled
+	echo '{"ok":true,"phase":"idle","error":"cancelled","msg":"已取消"}'
+}
+
+cmd_check_bg() {
+	if job_running; then
+		json_out_busy
+		return 0
+	fi
+	set_phase checking
+	("$0" check >/dev/null 2>&1) &
+	echo '{"ok":true,"phase":"checking","msg":"正在检查更新"}'
+}
+
+cmd_apply_bg() {
+	local t="$1"
+	if job_running; then
+		json_out_busy
+		return 0
+	fi
+	("$0" apply-fg "$t" >/dev/null 2>&1) &
+	echo '{"ok":true,"pending":true,"msg":"开始更新"}'
+}
+
+usage() {
+	echo "usage: vps000-update status|check|check-bg|apply [ipk|firmware]|cancel|progress"
+}
+
+case "$1" in
+	status) cmd_status ;;
+	check) cmd_check ;;
+	check-bg) cmd_check_bg ;;
+	apply) cmd_apply_bg "$2" ;;
+	apply-fg) cmd_apply "$2" ;;
+	cancel) cmd_cancel ;;
+	progress) cmd_progress ;;
+	*) usage; exit 1 ;;
+esac

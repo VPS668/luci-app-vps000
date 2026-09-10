@@ -1,0 +1,1685 @@
+#!/bin/sh
+# vps000 — VPS000 Cisco AnyConnect (openconnect) with account + password only.
+# Gateway is hidden. Official router default: login.wsdwan.com (Hong Kong).
+
+UCI_PKG=vps000
+UCI_SEC=main
+IFNAME=vps000
+TUNDEV=vpn-vps000
+STATE_DIR=/var/run/vps000
+STATUS_JSON="$STATE_DIR/status.json"
+CONNECT_JOB="$STATE_DIR/connect.job"
+CONNECT_RESULT="$STATE_DIR/connect.result"
+DEFAULT_SERVER=login.wsdwan.com
+DEFAULT_PORT=443
+DEFAULT_NODE=hkg
+PROFILE_URL=https://login.wsdwan.com/profile.xml
+PROFILE_CACHE=/tmp/vps000-profile.xml
+PROFILE_EXPIRE=/tmp/vps000-profile.expire
+PROFILE_FALLBACK=/usr/share/vps000/profile.xml
+PROFILE_TTL=3600
+AC_UA="AnyConnect Darwin_i386 4.10.04071"
+CHN_FILE=/etc/chnroutes.txt
+CHN_TABLE=51821
+CHN_RULE_PREF=1005
+DNS_CN=180.76.76.76
+DNS_OV=1.1.1.1
+DNS_OV2=8.8.8.8
+DNS_CONF=/tmp/dnsmasq.d/vps000.conf
+LEAK_TABLE=51822
+LEAK_RULE_PREF=32765
+KS_CHAIN=vps_ks
+WATCH_SLEEP=30
+RECONNECT_MAX=2
+RECONNECT_DELAY=3
+STABLE_SECS=60
+CONNECTING_TS="$STATE_DIR/connecting.ts"
+CONNECTING_TTL=30
+STATUS_TS="$STATE_DIR/status.ts"
+
+. /lib/functions.sh 2>/dev/null || true
+. /usr/share/vps000/portal.sh 2>/dev/null || true
+
+log() {
+	logger -t vps000 "$*"
+}
+
+json_escape() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+json_out() {
+	printf '%s\n' "$1"
+}
+
+uci_get() {
+	uci -q get "${UCI_PKG}.${UCI_SEC}.$1"
+}
+
+uci_set() {
+	uci -q set "${UCI_PKG}.${UCI_SEC}.$1=$2"
+}
+
+ensure_uci() {
+	uci -q get "${UCI_PKG}.${UCI_SEC}" >/dev/null 2>&1 && return 0
+	uci -q set "${UCI_PKG}.${UCI_SEC}=vps000"
+	uci -q commit "$UCI_PKG"
+}
+
+mkdir_state() {
+	mkdir -p "$STATE_DIR"
+}
+
+scrub() {
+	local s bom zwsp nbsp idsp
+	s=$(printf '%s' "$1" | tr -d '\000-\010\013\014\016-\037\177')
+	bom=$(printf '\357\273\277')
+	zwsp=$(printf '\342\200\213')
+	nbsp=$(printf '\302\240')
+	idsp=$(printf '\343\200\200')
+	s=$(printf '%s' "$s" | sed -e "s/${bom}//g" -e "s/${zwsp}//g" -e "s/${nbsp}/ /g" -e "s/${idsp}/ /g")
+	s=$(printf '%s' "$s" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+	s=$(printf '%s' "$s" | sed -e 's/^["'\''`<]*//' -e 's/["'\''`>]*$//')
+	s=$(printf '%s' "$s" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+	printf '%s' "$s"
+}
+
+normalize_account() {
+	local a
+	a=$(scrub "$1")
+	printf '%s' "$a" | grep -q '[[:space:]]' && return 1
+	printf '%s' "$a" | grep -qE '^[A-Za-z0-9._@+-]+$' || return 1
+	printf '%s' "$a"
+}
+
+normalize_password() {
+	local p
+	p=$(scrub "$1")
+	[ -n "$p" ] || return 1
+	printf '%s' "$p" | grep -qE '[[:cntrl:]`$\\]' && return 1
+	printf '%s' "$p"
+}
+
+normalize_host() {
+	local h
+	h=$(scrub "$1" | tr 'A-Z' 'a-z' | tr -d ' ')
+	h=$(printf '%s' "$h" | sed 's|^[Hh][Tt][Tt][Pp][Ss]\?://||;s|/.*$||;s|:.*$||')
+	printf '%s' "$h" | grep -qE '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$' || return 1
+	printf '%s' "$h"
+}
+
+vpn_server() {
+	local v
+	v=$(normalize_host "$(uci_get server)") && {
+		printf '%s' "$v"
+		return 0
+	}
+	printf '%s' "$DEFAULT_SERVER"
+}
+
+vpn_port() {
+	local p
+	p=$(scrub "$(uci_get port)")
+	case "$p" in
+		[1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]|[1-5][0-9][0-9][0-9][0-9])
+			printf '%s' "$p"
+			;;
+		*)
+			printf '%s' "$DEFAULT_PORT"
+			;;
+	esac
+}
+
+split_enabled() {
+	case "$(uci_get split)" in
+		0|off|false|no|global) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+wanted() {
+	[ "$(uci_get want)" = "1" ]
+}
+
+set_want() {
+	ensure_uci
+	uci_set want "$1"
+	uci commit "$UCI_PKG"
+}
+
+set_account() {
+	local a p
+	a=$(normalize_account "$1") || {
+		echo "invalid account" >&2
+		return 1
+	}
+	ensure_uci
+	uci_set account "$a"
+	if [ -n "$2" ]; then
+		p=$(normalize_password "$2") || {
+			echo "invalid password" >&2
+			return 1
+		}
+		uci_set password "$p"
+	fi
+	uci commit "$UCI_PKG"
+}
+
+set_enable() {
+	ensure_uci
+	case "$1" in
+		1|on|true|yes) uci_set enable 1 ;;
+		*) uci_set enable 0 ;;
+	esac
+	uci commit "$UCI_PKG"
+	write_status >/dev/null 2>&1 || true
+}
+
+set_split() {
+	ensure_uci
+	case "$1" in
+		0|off|false|no|global) uci_set split 0 ;;
+		*) uci_set split 1 ;;
+	esac
+	uci commit "$UCI_PKG"
+	wanted && apply_policy >/dev/null 2>&1 || true
+	write_status >/dev/null 2>&1 || true
+}
+
+killswitch_enabled() {
+	case "$(uci_get killswitch)" in
+		0|off|false|no) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+# Active while the user still wants a session (not an explicit disconnect).
+leakprotect_active() {
+	killswitch_enabled && wanted
+}
+
+set_killswitch() {
+	ensure_uci
+	case "$1" in
+		0|off|false|no) uci_set killswitch 0 ;;
+		*) uci_set killswitch 1 ;;
+	esac
+	uci commit "$UCI_PKG"
+	apply_policy >/dev/null 2>&1 || true
+	write_status >/dev/null 2>&1 || true
+}
+
+set_server() {
+	local h
+	h=$(normalize_host "$1") || {
+		echo "invalid server" >&2
+		return 1
+	}
+	ensure_uci
+	uci_set server "$h"
+	uci commit "$UCI_PKG"
+}
+
+normalize_node() {
+	local r
+	r=$(scrub "$1" | tr 'A-Z' 'a-z' | tr -d ' ')
+	printf '%s' "$r" | grep -qE '^[a-z0-9_-]+$' || return 1
+	printf '%s' "$r"
+}
+
+set_node() {
+	local r
+	r=$(normalize_node "$1") || {
+		echo "invalid node" >&2
+		return 1
+	}
+	ensure_uci
+	uci_set node "$r"
+	uci commit "$UCI_PKG"
+}
+
+now_ts() {
+	date +%s 2>/dev/null
+}
+
+profile_usable() {
+	[ -s "$1" ] && grep -q '<HostEntry>' "$1"
+}
+
+extend_profile_ttl() {
+	local now
+	now=$(now_ts)
+	[ -n "$now" ] || return 0
+	echo $((now + PROFILE_TTL)) > "$PROFILE_EXPIRE"
+}
+
+seed_profile_cache() {
+	profile_usable "$PROFILE_CACHE" && return 0
+	if profile_usable "$PROFILE_FALLBACK"; then
+		cat "$PROFILE_FALLBACK" > "$PROFILE_CACHE"
+		return 0
+	fi
+	return 1
+}
+
+profile_fresh() {
+	local now exp
+	profile_usable "$PROFILE_CACHE" || return 1
+	now=$(now_ts)
+	exp=$(cat "$PROFILE_EXPIRE" 2>/dev/null)
+	[ -n "$now" ] && [ -n "$exp" ] && [ "$now" -lt "$exp" ] 2>/dev/null
+}
+
+profile_file() {
+	if profile_usable "$PROFILE_CACHE"; then
+		printf '%s' "$PROFILE_CACHE"
+		return 0
+	fi
+	if profile_usable "$PROFILE_FALLBACK"; then
+		printf '%s' "$PROFILE_FALLBACK"
+		return 0
+	fi
+	return 1
+}
+
+# Use /tmp cache. Refresh online only after 1h. On fetch failure keep
+# the file and extend TTL so the page never wipes the fallback list.
+# "force" expires the TTL without deleting the file.
+fetch_profile() {
+	local gw
+	mkdir_state
+	if [ "$1" = force ]; then
+		echo 0 > "$PROFILE_EXPIRE"
+	fi
+	if profile_fresh; then
+		return 0
+	fi
+	gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$gw" ] || gw=$(wan_gw)
+	pin_host_via_wan login.wsdwan.com "$gw"
+	pin_host_via_wan node.vps000.org "$gw"
+	if curl -k -sS -m 15 -A "$AC_UA" -o "${PROFILE_CACHE}.tmp" "$PROFILE_URL" \
+		&& profile_usable "${PROFILE_CACHE}.tmp"; then
+		cat "${PROFILE_CACHE}.tmp" > "$PROFILE_CACHE"
+		rm -f "${PROFILE_CACHE}.tmp"
+		extend_profile_ttl
+		return 0
+	fi
+	rm -f "${PROFILE_CACHE}.tmp"
+	if profile_usable "$PROFILE_CACHE"; then
+		extend_profile_ttl
+		return 0
+	fi
+	if seed_profile_cache; then
+		extend_profile_ttl
+		return 0
+	fi
+	return 1
+}
+
+# lines: id<TAB>name<TAB>url<TAB>group
+# HostEntry by local-name; keep HostAddress path; optional UserGroup / BackupServerList.
+parse_profile() {
+	local f
+	f=$(profile_file) || return 1
+	awk '
+		function inner(tag, line,   a, b) {
+			a = index(line, "<" tag ">")
+			if (a == 0) return ""
+			line = substr(line, a + length(tag) + 2)
+			b = index(line, "</")
+			if (b > 0) line = substr(line, 1, b - 1)
+			gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+			return line
+		}
+		function emit(id, name, addr, grp,   n) {
+			if (addr == "") return
+			if (id == "") {
+				n = index(addr, "node=")
+				if (n > 0) {
+					id = substr(addr, n + 5)
+					sub(/[^A-Za-z0-9_-].*/, "", id)
+				}
+			}
+			if (id == "") id = name
+			if (id == "") id = addr
+			if (name == "") name = id
+			printf "%s\t%s\t%s\t%s\n", id, name, addr, grp
+		}
+		/<HostEntry/ { name = ""; addr = ""; grp = ""; id = ""; in_entry = 1; next }
+		in_entry && /<HostName>/ { name = inner("HostName", $0) }
+		in_entry && /<HostAddress>/ { addr = inner("HostAddress", $0) }
+		in_entry && /<UserGroup>/ { grp = inner("UserGroup", $0) }
+		in_entry && /<\/HostEntry>/ {
+			emit(id, name, addr, grp)
+			in_entry = 0
+		}
+		/<BackupServerList>/ { in_bak = 1 }
+		in_bak && /<HostAddress>/ {
+			emit("backup", "备用服务器", inner("HostAddress", $0), "")
+		}
+		/<\/BackupServerList>/ { in_bak = 0 }
+	' "$f"
+}
+
+node_row() {
+	local id="$1" row
+	row=$(parse_profile 2>/dev/null | awk -F '\t' -v id="$id" 'tolower($1)==tolower(id) {print; exit}')
+	[ -n "$row" ] && printf '%s' "$row"
+}
+
+current_node() {
+	local n
+	n=$(normalize_node "$(uci_get node)") && {
+		printf '%s' "$n"
+		return 0
+	}
+	printf '%s' "$DEFAULT_NODE"
+}
+
+node_src_url() {
+	local row
+	row=$(node_row "$(current_node)")
+	if [ -n "$row" ]; then
+		printf '%s' "$row" | awk -F '\t' '{print $3}'
+		return 0
+	fi
+	printf 'https://node.vps000.org/?node=%s' "$(current_node)"
+}
+
+# OpenConnect 7.03 mishandles portal HostAddress (?node=) and omits :port
+# in group-access. Follow one 302 and connect to the Location URL as-is.
+resolve_connect_url() {
+	local src dest host
+	src="$1"
+	[ -n "$src" ] || return 1
+	host=$(url_host "$src")
+	pin_host_via_wan "$host" "$(cat "$STATE_DIR/wan_gw" 2>/dev/null)"
+	dest=$(curl -k -sS -m 15 -D - -o /dev/null -A "$AC_UA" "$src" 2>/dev/null \
+		| awk 'BEGIN{IGNORECASE=1} /^Location:/{sub(/\r/,""); print $2; exit}')
+	dest=$(scrub "$dest")
+	case "$dest" in
+		https://*[A-Za-z0-9]*)
+			printf '%s' "$dest"
+			return 0
+			;;
+	esac
+	printf '%s' "$src"
+}
+
+node_display_name() {
+	local row
+	row=$(node_row "$(current_node)")
+	if [ -n "$row" ]; then
+		printf '%s' "$row" | awk -F '\t' '{print $2}'
+		return 0
+	fi
+	printf '%s' "$(current_node)"
+}
+
+node_authgroup() {
+	local row
+	row=$(node_row "$(current_node)")
+	[ -n "$row" ] && printf '%s' "$row" | awk -F '\t' '{print $4}'
+}
+
+if_up() {
+	[ -d "/sys/class/net/$TUNDEV" ] || return 1
+	ip -4 addr show dev "$TUNDEV" 2>/dev/null | grep -q 'inet '
+}
+
+tun_ip() {
+	ip -4 addr show dev "$TUNDEV" 2>/dev/null | awk '/inet / {print $2; exit}' | cut -d/ -f1
+}
+
+is_public_v4() {
+	case "$1" in
+		10.*|127.*|192.168.*|169.254.*|100.64.*|100.6[5-9].*|100.[7-9][0-9].*|100.1[0-2][0-9].*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
+			return 1
+			;;
+		[0-9]*.[0-9]*.[0-9]*.[0-9]*)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+pin_host_via_tun() {
+	local host ip
+	host=$(scrub "$1")
+	[ -n "$host" ] || return 0
+	ip=$(resolve_ipv4 "$host") || return 0
+	[ -n "$ip" ] || return 0
+	ip -4 route replace "$ip/32" dev "$TUNDEV" 2>/dev/null || true
+}
+
+url_host() {
+	printf '%s' "$1" | sed 's|^[Hh][Tt][Tt][Pp][Ss]\?://||; s|/.*||; s|:.*||'
+}
+
+parse_exit_ip() {
+	local body ip
+	body="$1"
+	ip=$(printf '%s' "$body" | tr -d '\r' | awk -F= '
+		/^ip=/ { print $2; exit }
+		/^query=/ { print $2; exit }
+	')
+	[ -n "$ip" ] || ip=$(jsonfilter -s "$body" -e '@.ip' 2>/dev/null)
+	[ -n "$ip" ] || ip=$(jsonfilter -s "$body" -e '@.query' 2>/dev/null)
+	[ -n "$ip" ] || ip=$(printf '%s' "$body" | tr -d '\r' | awk '
+		/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$/ { print $1; exit }
+	')
+	ip=$(printf '%s' "$ip" | tr -d ' \n"')
+	printf '%s' "$ip"
+}
+
+parse_exit_loc() {
+	local body loc
+	body="$1"
+	loc=$(printf '%s' "$body" | tr -d '\r' | awk -F= '
+		/^loc=/ { print toupper($2); exit }
+		/^country=/ { print toupper($2); exit }
+	')
+	[ -n "$loc" ] || loc=$(jsonfilter -s "$body" -e '@.country' 2>/dev/null)
+	[ -n "$loc" ] || loc=$(jsonfilter -s "$body" -e '@.countryCode' 2>/dev/null)
+	loc=$(printf '%s' "$loc" | tr -d ' \n"' | tr 'a-z' 'A-Z')
+	case "$loc" in
+		[A-Z][A-Z]) printf '%s' "$loc" ;;
+	esac
+}
+
+exit_loc_fallback() {
+	local name
+	name=$(node_display_name)
+	name=$(printf '%s' "$name" | tr -d '\t\r\n')
+	printf '%s' "$name"
+}
+
+exit_gen() {
+	cat "$STATE_DIR/exit_gen" 2>/dev/null || echo 0
+}
+
+clear_exit_ip() {
+	local pid
+	pid=$(cat "$STATE_DIR/exit_ip.job" 2>/dev/null)
+	case "$pid" in
+		[1-9]*) kill "$pid" 2>/dev/null || true ;;
+	esac
+	mkdir_state
+	echo $(( $(exit_gen) + 1 )) > "$STATE_DIR/exit_gen"
+	rm -f "$STATE_DIR/exit_ip" "$STATE_DIR/exit_ip.job"
+}
+
+# Public egress IP via tun. PolarSSL 1.3 + IPv6 hang: force -4, prefer HTTP.
+# loc= from Cloudflare/ipinfo when present; otherwise use the line name.
+fetch_exit_ip() {
+	local ip loc url body gen
+	if_up || {
+		rm -f "$STATE_DIR/exit_ip"
+		return 1
+	}
+	mkdir_state
+	gen=$(exit_gen)
+	ip=
+	loc=
+	for url in \
+		https://www.cloudflare.com/cdn-cgi/trace \
+		http://ipinfo.io/json \
+		https://ipinfo.io/json \
+		http://ipinfo.io/ip \
+		https://ipinfo.io/ip \
+		http://ipinfo.io \
+		http://ipv4.icanhazip.com \
+		http://icanhazip.com \
+		http://ifconfig.me/ip \
+		http://ip.sb
+	do
+		pin_host_via_tun "$(url_host "$url")"
+		body=$(curl -4 -sS -k -m 8 --connect-timeout 5 --interface "$TUNDEV" "$url" 2>/dev/null) || body=
+		ip=$(parse_exit_ip "$body")
+		if is_public_v4 "$ip"; then
+			loc=$(parse_exit_loc "$body")
+			break
+		fi
+		ip=
+		loc=
+	done
+	[ "$(exit_gen)" = "$gen" ] || return 1
+	[ -n "$loc" ] || loc=$(exit_loc_fallback)
+	if is_public_v4 "$ip"; then
+		[ "$(exit_gen)" = "$gen" ] || return 1
+		printf '%s %s\n' "$ip" "${loc:--}" > "$STATE_DIR/exit_ip"
+		log "exit ip $ip loc=${loc:-?}"
+		return 0
+	fi
+	return 1
+}
+
+exit_ip_cached() {
+	local ip
+	if_up || {
+		rm -f "$STATE_DIR/exit_ip"
+		return 1
+	}
+	[ -s "$STATE_DIR/exit_ip" ] || return 1
+	ip=$(awk '{print $1; exit}' "$STATE_DIR/exit_ip")
+	is_public_v4 "$ip" || {
+		rm -f "$STATE_DIR/exit_ip"
+		return 1
+	}
+	printf '%s' "$ip"
+}
+
+exit_loc_cached() {
+	local loc
+	if_up || return 1
+	[ -s "$STATE_DIR/exit_ip" ] || return 1
+	loc=$(awk '{$1=""; sub(/^ /,""); print}' "$STATE_DIR/exit_ip")
+	[ "$loc" = "-" ] && loc=
+	[ -n "$loc" ] && printf '%s' "$loc"
+}
+
+maybe_refresh_exit_ip() {
+	local loc
+	if_up || return 0
+	job_alive && return 0
+	wanted || return 0
+	if [ -s "$STATE_DIR/exit_ip" ] && is_public_v4 "$(awk '{print $1; exit}' "$STATE_DIR/exit_ip")"; then
+		loc=$(awk '{$1=""; sub(/^ /,""); print}' "$STATE_DIR/exit_ip")
+		[ -n "$loc" ] && [ "$loc" != "-" ] && return 0
+	fi
+	[ -f "$STATE_DIR/exit_ip.job" ] && kill -0 "$(cat "$STATE_DIR/exit_ip.job" 2>/dev/null)" 2>/dev/null && return 0
+	mkdir_state
+	(
+		echo $$ > "$STATE_DIR/exit_ip.job"
+		fetch_exit_ip >/dev/null 2>&1 || true
+		rm -f "$STATE_DIR/exit_ip.job"
+	) >/dev/null 2>&1 &
+}
+
+wan_logical() {
+	echo wan
+}
+
+wan_gw() {
+	ip -4 route show default 2>/dev/null | awk '/via/ && $0 !~ /vpn-vps000/ {for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit }}'
+}
+
+wan_dev() {
+	local d
+	d=$(ip -4 route show default 2>/dev/null | awk '/via/ && $0 !~ /vpn-vps000/ {for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+	[ -n "$d" ] || d=$(cat "$STATE_DIR/wan_dev" 2>/dev/null)
+	[ -n "$d" ] || d=$(ip -4 route get 223.5.5.5 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+	printf '%s' "$d"
+}
+
+save_wan_default() {
+	local gw dev
+	mkdir_state
+	gw=$(wan_gw)
+	dev=$(wan_dev)
+	[ -n "$gw" ] && echo "$gw" > "$STATE_DIR/wan_gw"
+	[ -n "$dev" ] && echo "$dev" > "$STATE_DIR/wan_dev"
+}
+
+restore_wan_default() {
+	local gw dev
+	gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	dev=$(cat "$STATE_DIR/wan_dev" 2>/dev/null)
+	[ -n "$gw" ] || gw=$(wan_gw)
+	[ -n "$dev" ] || dev=$(wan_dev)
+	[ -n "$gw" ] && [ -n "$dev" ] || return 0
+	ip -4 route replace default via "$gw" dev "$dev" 2>/dev/null || true
+}
+
+resolve_ipv4() {
+	local host="$1" ip
+	case "$host" in
+		[0-9]*.[0-9]*.[0-9]*.[0-9]*) printf '%s' "$host"; return 0 ;;
+	esac
+	ip=$(resolveip -t 8 "$host" 2>/dev/null | awk '/^[0-9]+\./ {print $1; exit}')
+	[ -n "$ip" ] || ip=$(nslookup "$host" 2>/dev/null | awk '/^Address 1:/{print $3; exit}')
+	[ -n "$ip" ] || ip=$(nslookup "$host" 2>/dev/null | awk '/^Address: / && $2 !~ /#/ {print $2; exit}')
+	[ -n "$ip" ] && printf '%s' "$ip"
+}
+
+pin_host_via_wan() {
+	local host ip gw dev
+	host=$(scrub "$1")
+	gw=$(trim_gw "$2")
+	[ -n "$host" ] || return 0
+	ip=$(resolve_ipv4 "$host") || return 0
+	[ -n "$gw" ] || gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$gw" ] || gw=$(wan_gw)
+	dev=$(cat "$STATE_DIR/wan_dev" 2>/dev/null)
+	[ -n "$dev" ] || dev=$(wan_dev)
+	[ -n "$ip" ] && [ -n "$gw" ] && [ -n "$dev" ] || return 0
+	ip -4 route replace "$ip/32" via "$gw" dev "$dev" 2>/dev/null || true
+	mkdir_state
+	echo "$ip" > "$STATE_DIR/endpoint_ip"
+}
+
+# China DNS always WAN; overseas DNS via TUN when up. Do not touch endpoint_ip.
+pin_ip_via_wan() {
+	local ip gw dev
+	ip="$1"
+	gw=$(trim_gw "$2")
+	[ -n "$ip" ] || return 0
+	[ -n "$gw" ] || gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$gw" ] || gw=$(wan_gw)
+	dev=$(cat "$STATE_DIR/wan_dev" 2>/dev/null)
+	[ -n "$dev" ] || dev=$(wan_dev)
+	[ -n "$gw" ] && [ -n "$dev" ] || return 0
+	ip -4 route replace "$ip/32" via "$gw" dev "$dev" 2>/dev/null || true
+}
+
+pin_dns_routes() {
+	local d gw
+	gw="$1"
+	d=$(china_dns)
+	pin_ip_via_wan "$d" "$gw"
+	[ "$d" = "$DNS_CN" ] || pin_ip_via_wan "$DNS_CN" "$gw"
+	if if_up; then
+		overseas_dns_all | while read d; do
+			[ -n "$d" ] && ip -4 route replace "$d/32" dev "$TUNDEV" 2>/dev/null || true
+		done
+	else
+		ip -4 route del "$DNS_OV/32" dev "$TUNDEV" 2>/dev/null || true
+		ip -4 route del "$DNS_OV2/32" dev "$TUNDEV" 2>/dev/null || true
+	fi
+}
+
+is_ov_dns() {
+	case "$1" in
+		1.1.1.1|1.0.0.1|8.8.8.8|8.8.4.4|9.9.9.9) return 0 ;;
+	esac
+	return 1
+}
+
+save_wan_dns() {
+	local d
+	mkdir_state
+	: > "$STATE_DIR/wan_dns"
+	if [ -s /tmp/resolv.conf.d/resolv.conf.auto ]; then
+		awk '/^nameserver[ \t]+[0-9]/{print $2}' /tmp/resolv.conf.d/resolv.conf.auto \
+			>> "$STATE_DIR/wan_dns" 2>/dev/null || true
+	fi
+	awk '
+		/^# Interface / { wan = ($3 == "wan" || $3 == "wan6") }
+		wan && /^nameserver[ \t]+[0-9]/ { print $2 }
+	' /tmp/resolv.conf.auto 2>/dev/null >> "$STATE_DIR/wan_dns" || true
+	: > "$STATE_DIR/wan_dns.tmp"
+	while read d; do
+		[ -n "$d" ] || continue
+		is_ov_dns "$d" && continue
+		case "$d" in
+			127.*|0.*) continue ;;
+		esac
+		grep -qx "$d" "$STATE_DIR/wan_dns.tmp" 2>/dev/null && continue
+		echo "$d" >> "$STATE_DIR/wan_dns.tmp"
+	done < "$STATE_DIR/wan_dns"
+	mv "$STATE_DIR/wan_dns.tmp" "$STATE_DIR/wan_dns"
+}
+
+china_dns() {
+	local d
+	[ -s "$STATE_DIR/wan_dns" ] && d=$(awk 'NF{print; exit}' "$STATE_DIR/wan_dns")
+	[ -n "$d" ] && { printf '%s' "$d"; return 0; }
+	save_wan_dns
+	[ -s "$STATE_DIR/wan_dns" ] && d=$(awk 'NF{print; exit}' "$STATE_DIR/wan_dns")
+	[ -n "$d" ] && { printf '%s' "$d"; return 0; }
+	printf '%s' "$DNS_CN"
+}
+
+save_vpn_dns() {
+	mkdir_state
+	[ -s "$STATE_DIR/upstream_dns" ] && return 0
+	awk '
+		/^# Interface / { vpn = ($3 == "vps000" || $3 == "vpn-vps000") }
+		vpn && /^nameserver[ \t]+[0-9]/ { print $2 }
+	' /tmp/resolv.conf.auto 2>/dev/null > "$STATE_DIR/upstream_dns" || true
+	[ -s "$STATE_DIR/upstream_dns" ] || rm -f "$STATE_DIR/upstream_dns"
+}
+
+overseas_dns_all() {
+	local d n
+	n=0
+	save_vpn_dns
+	if [ -s "$STATE_DIR/upstream_dns" ]; then
+		while read d; do
+			case "$d" in
+				[0-9]*.[0-9]*.[0-9]*.[0-9]*)
+					echo "$d"
+					n=1
+					;;
+			esac
+		done < "$STATE_DIR/upstream_dns"
+	fi
+	if [ "$n" = 0 ]; then
+		echo "$DNS_OV"
+		echo "$DNS_OV2"
+	fi
+}
+
+dnsmasq_supports_chnroutes() {
+	dnsmasq --help 2>&1 | grep -q chnroutes
+}
+
+reassert_local_resolv() {
+	if [ -L /tmp/resolv.conf ] || ! grep -q '127.0.0.1' /tmp/resolv.conf 2>/dev/null; then
+		rm -f /tmp/resolv.conf
+		printf 'search lan\nnameserver 127.0.0.1\n' > /tmp/resolv.conf
+	fi
+}
+
+dnsmasq_apply() {
+	mkdir -p /tmp/dnsmasq.d
+	# conf-dir (server=/no-resolv/chnroutes) is only read at process start.
+	# SIGHUP/procd reload is not enough; a no-op "restart" at boot also
+	# leaves the old daemon with an emptied resolv.conf.auto.
+	killall dnsmasq 2>/dev/null || true
+	/etc/init.d/dnsmasq start >/dev/null 2>&1 || \
+		/etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+	reassert_local_resolv
+}
+
+schedule_dnsmasq_apply() {
+	mkdir_state
+	[ -f "$STATE_DIR/dns_restart.job" ] && kill -0 "$(cat "$STATE_DIR/dns_restart.job" 2>/dev/null)" 2>/dev/null && return 0
+	(
+		echo $$ > "$STATE_DIR/dns_restart.job"
+		sleep 2
+		dnsmasq_apply
+		pidof dnsmasq 2>/dev/null | awk '{print $1; exit}' > "$STATE_DIR/dns_pid"
+		rm -f "$STATE_DIR/dns_restart.job"
+	) >/dev/null 2>&1 &
+}
+
+restore_wan_resolv() {
+	local d
+	if [ -s "$STATE_DIR/wan_dns" ]; then
+		{
+			echo '# Interface wan'
+			while read d; do
+				[ -n "$d" ] && echo "nameserver $d"
+			done < "$STATE_DIR/wan_dns"
+		} > /tmp/resolv.conf.auto
+	fi
+}
+
+dns_fingerprint() {
+	local chn chnf
+	chnf=$(md5sum "$CHN_FILE" 2>/dev/null | awk '{print $1}')
+	if if_up && split_enabled; then
+		printf 'split %s ' "$(china_dns)"
+		overseas_dns_all | tr '\n' ' '
+		printf ' %s' "$chnf"
+	elif if_up; then
+		printf 'global '
+		overseas_dns_all | tr '\n' ' '
+	else
+		printf 'down %s' "$(china_dns)"
+	fi
+}
+
+dns_job_alive() {
+	local pid
+	pid=$(cat "$STATE_DIR/dns_restart.job" 2>/dev/null)
+	[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+apply_upstream_dns() {
+	local fp local_d d conf pid
+	conf="$DNS_CONF"
+	mkdir -p /tmp/dnsmasq.d "$STATE_DIR"
+	fp=$(dns_fingerprint)
+	pid=$(pidof dnsmasq 2>/dev/null | awk '{print $1; exit}')
+	if [ -n "$fp" ] && [ -s "$conf" ] && [ "$(cat "$STATE_DIR/dns_fp" 2>/dev/null)" = "$fp" ] \
+		&& [ -n "$pid" ] && [ "$(cat "$STATE_DIR/dns_pid" 2>/dev/null)" = "$pid" ]; then
+		reassert_local_resolv
+		return 0
+	fi
+	if dns_job_alive && [ "$(cat "$STATE_DIR/dns_fp" 2>/dev/null)" = "$fp" ]; then
+		reassert_local_resolv
+		return 0
+	fi
+	if if_up && split_enabled && dnsmasq_supports_chnroutes && [ -s "$CHN_FILE" ]; then
+		local_d=$(china_dns)
+		{
+			echo '# vps000 split DNS: China WAN / overseas VPN'
+			echo 'no-resolv'
+			echo 'all-servers'
+			echo "server=${local_d},0"
+			[ "$local_d" = "$DNS_CN" ] || echo "server=${DNS_CN},0"
+			overseas_dns_all | while read d; do
+				[ -n "$d" ] && echo "server=${d},1"
+			done
+			echo "chnroutes-file=${CHN_FILE}"
+		} > "$conf"
+		restore_wan_resolv
+		log "dns split china=${local_d} overseas=$(overseas_dns_all | tr '\n' ' ')"
+	elif if_up; then
+		{
+			echo '# vps000 global DNS: VPN-pushed'
+			echo 'no-resolv'
+			overseas_dns_all | while read d; do
+				[ -n "$d" ] && echo "server=${d}"
+			done
+		} > "$conf"
+		restore_wan_resolv
+		log "dns global $(overseas_dns_all | tr '\n' ' ')"
+	else
+		rm -f "$conf"
+		restore_wan_resolv
+		if [ ! -s "$STATE_DIR/wan_dns" ]; then
+			{
+				echo '# vps000: no WAN DHCP DNS, fallback'
+				echo 'no-resolv'
+				echo "server=${DNS_CN}"
+			} > "$conf"
+			log "dns down fallback ${DNS_CN}"
+		else
+			log "dns down dhcp $(cat "$STATE_DIR/wan_dns" | tr '\n' ' ')"
+		fi
+	fi
+	printf '%s' "$fp" > "$STATE_DIR/dns_fp"
+	if dns_job_alive; then
+		reassert_local_resolv
+		return 0
+	fi
+	dnsmasq_apply
+	pidof dnsmasq 2>/dev/null | awk '{print $1; exit}' > "$STATE_DIR/dns_pid"
+	if_up && schedule_dnsmasq_apply
+}
+
+trim_gw() {
+	scrub "$1"
+}
+
+lan_dev() {
+	local d
+	d=$(uci -q get network.lan.ifname)
+	d=$(printf '%s' "$d" | awk '{print $1}')
+	[ -n "$d" ] && [ -d "/sys/class/net/$d" ] && { printf '%s' "$d"; return 0; }
+	[ -d /sys/class/net/br-lan ] && { printf '%s' br-lan; return 0; }
+	printf '%s' br-lan
+}
+
+reserved_unicast() {
+	printf '%s\n' \
+		10.0.0.0/8 \
+		100.64.0.0/10 \
+		169.254.0.0/16 \
+		172.16.0.0/12 \
+		192.0.0.0/24 \
+		192.0.2.0/24 \
+		192.88.99.0/24 \
+		192.168.0.0/16 \
+		198.18.0.0/15 \
+		198.51.100.0/24 \
+		203.0.113.0/24
+}
+
+reserved_localonly() {
+	printf '%s\n' \
+		0.0.0.0/8 \
+		127.0.0.0/8 \
+		224.0.0.0/4 \
+		240.0.0.0/4 \
+		255.255.255.255/32
+}
+
+pin_reserved_into() {
+	local gw dev table p lan
+	gw=$(trim_gw "$1")
+	table="$2"
+	dev=$(cat "$STATE_DIR/wan_dev" 2>/dev/null)
+	[ -n "$dev" ] || dev=$(wan_dev)
+	[ -n "$gw" ] || gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$gw" ] || gw=$(wan_gw)
+	[ -n "$dev" ] || return 1
+	[ -n "$gw" ] || return 1
+	for p in $(reserved_unicast); do
+		case "$p" in
+			169.254.0.0/16)
+				if [ -n "$table" ]; then
+					ip route replace "$p" dev "$dev" proto static scope link table "$table" 2>/dev/null || true
+				else
+					ip route replace "$p" dev "$dev" proto static scope link 2>/dev/null || true
+				fi
+				;;
+			*)
+				if [ -n "$table" ]; then
+					ip route replace "$p" via "$gw" dev "$dev" table "$table" 2>/dev/null || true
+				else
+					ip route replace "$p" via "$gw" dev "$dev" 2>/dev/null || true
+				fi
+				;;
+		esac
+	done
+	lan=$(lan_dev)
+	for p in $(reserved_localonly); do
+		case "$p" in
+			224.0.0.0/4)
+				if [ -n "$table" ]; then
+					ip route replace "$p" dev "$lan" proto static table "$table" 2>/dev/null || \
+						ip route replace "$p" dev lo proto static table "$table" 2>/dev/null || true
+				else
+					ip route replace "$p" dev "$lan" proto static 2>/dev/null || \
+						ip route replace "$p" dev lo proto static 2>/dev/null || true
+				fi
+				;;
+			*)
+				if [ -n "$table" ]; then
+					ip route replace "$p" dev lo proto static table "$table" 2>/dev/null || true
+				else
+					ip route replace "$p" dev lo proto static 2>/dev/null || true
+				fi
+				;;
+		esac
+	done
+}
+
+pin_reserved_local() {
+	local gw dev lan_net lan
+	gw=$(trim_gw "$1")
+	pin_reserved_into "$gw" ""
+	dev=$(cat "$STATE_DIR/wan_dev" 2>/dev/null)
+	[ -n "$dev" ] || dev=$(wan_dev)
+	[ -n "$dev" ] && sysctl -q -w "net.ipv4.conf.${dev}.send_redirects=0" 2>/dev/null || true
+	lan=$(lan_dev)
+	lan_net=$(ip -4 route show dev "$lan" 2>/dev/null | awk '/proto kernel/{print $1; exit}')
+	[ -n "$lan_net" ] && ip route replace "$lan_net" dev "$lan" proto static 2>/dev/null || true
+}
+
+unpin_reserved_local() {
+	local p
+	for p in $(reserved_unicast) $(reserved_localonly); do
+		ip route del "$p" 2>/dev/null || true
+	done
+}
+
+setup_leak_table() {
+	mkdir -p /etc/iproute2
+	if [ -f /etc/iproute2/rt_tables ]; then
+		grep -qE "^${LEAK_TABLE}[[:space:]]" /etc/iproute2/rt_tables 2>/dev/null || \
+			echo "${LEAK_TABLE}	vps_leak" >> /etc/iproute2/rt_tables
+	fi
+}
+
+# Tunnel down + user still wants VPN: reserved/LAN stay local, public IPv4
+# cannot fall back to the WAN default (no local-IP leak while reconnect7ng).
+apply_leak_default() {
+	local gw dev lan lan_net sip
+	leakprotect_active || { clear_leak_default; return 0; }
+	if_up && { clear_leak_default; return 0; }
+	setup_leak_table
+	gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$gw" ] || gw=$(wan_gw)
+	dev=$(cat "$STATE_DIR/wan_dev" 2>/dev/null)
+	[ -n "$dev" ] || dev=$(wan_dev)
+	ip route flush table "$LEAK_TABLE" 2>/dev/null || true
+	pin_reserved_into "$gw" "$LEAK_TABLE"
+	lan=$(lan_dev)
+	lan_net=$(ip -4 route show dev "$lan" 2>/dev/null | awk '/proto kernel/{print $1; exit}')
+	[ -n "$lan_net" ] && ip route replace "$lan_net" dev "$lan" proto static table "$LEAK_TABLE" 2>/dev/null || true
+	sip=$(cat "$STATE_DIR/endpoint_ip" 2>/dev/null)
+	[ -n "$sip" ] && [ -n "$gw" ] && [ -n "$dev" ] && \
+		ip route replace "$sip/32" via "$gw" dev "$dev" table "$LEAK_TABLE" 2>/dev/null || true
+	for sip in login.wsdwan.com node.vps000.org "$(cat "$STATE_DIR/endpoint_host" 2>/dev/null)"; do
+		sip=$(resolve_ipv4 "$sip") || continue
+		[ -n "$sip" ] && [ -n "$gw" ] && [ -n "$dev" ] && \
+			ip route replace "$sip/32" via "$gw" dev "$dev" table "$LEAK_TABLE" 2>/dev/null || true
+	done
+	if ! ip route replace prohibit default table "$LEAK_TABLE" 2>/dev/null; then
+		ip route replace unreachable default table "$LEAK_TABLE" 2>/dev/null || true
+	fi
+	ip rule del pref "$LEAK_RULE_PREF" 2>/dev/null || true
+	ip rule add pref "$LEAK_RULE_PREF" lookup "$LEAK_TABLE" 2>/dev/null || true
+	log "leak-protect: public traffic blocked until tunnel is up"
+}
+
+clear_leak_default() {
+	ip rule del pref "$LEAK_RULE_PREF" 2>/dev/null || true
+	ip route flush table "$LEAK_TABLE" 2>/dev/null || true
+}
+
+ks_clear() {
+	local prev lan i wan
+	command -v iptables >/dev/null 2>&1 || return 0
+	prev=$(cat "$STATE_DIR/ks_lan" 2>/dev/null)
+	lan=$(lan_dev)
+	wan=$(cat "$STATE_DIR/wan_dev" 2>/dev/null)
+	[ -n "$wan" ] || wan=$(wan_dev)
+	for i in $prev $lan br-lan; do
+		[ -n "$i" ] || continue
+		iptables -D FORWARD -i "$i" -j "$KS_CHAIN" 2>/dev/null || true
+	done
+	iptables -D OUTPUT -j "$KS_CHAIN" 2>/dev/null || true
+	iptables -F "$KS_CHAIN" 2>/dev/null || true
+	iptables -X "$KS_CHAIN" 2>/dev/null || true
+	rm -f "$STATE_DIR/ks_lan"
+}
+
+apply_killswitch() {
+	local lan p
+	command -v iptables >/dev/null 2>&1 || return 0
+	ks_clear
+	leakprotect_active || return 0
+	lan=$(lan_dev)
+	[ -n "$lan" ] || return 0
+	iptables -N "$KS_CHAIN" 2>/dev/null || iptables -F "$KS_CHAIN"
+	iptables -A "$KS_CHAIN" -o "$TUNDEV" -j RETURN
+	iptables -A "$KS_CHAIN" -o "$IFNAME" -j RETURN
+	iptables -A "$KS_CHAIN" -o "$lan" -j RETURN
+	for p in $(reserved_unicast) $(reserved_localonly); do
+		iptables -A "$KS_CHAIN" -d "$p" -j RETURN
+	done
+	# Split: China stays on WAN via table 51821. Global: reject the rest.
+	if ! split_enabled; then
+		iptables -A "$KS_CHAIN" -j REJECT --reject-with icmp-net-prohibited
+	fi
+	iptables -I FORWARD 1 -i "$lan" -j "$KS_CHAIN"
+	mkdir_state
+	printf '%s' "$lan" > "$STATE_DIR/ks_lan"
+}
+
+wait_wan() {
+	local n=0
+	while [ "$n" -lt 20 ]; do
+		[ -n "$(wan_gw)" ] && return 0
+		sleep 1
+		n=$((n + 1))
+	done
+	return 1
+}
+
+wait_if_up() {
+	local n=0
+	while [ "$n" -lt 120 ]; do
+		[ -f "$STATE_DIR/connect.cancel" ] && return 1
+		if_up && return 0
+		sleep 1
+		n=$((n + 1))
+	done
+	return 1
+}
+
+# ifdown is asynchronous. Switching without waiting lets the old
+# teardown kill the new tunnel, and watch/hotplug start more connects.
+wait_if_down() {
+	local n=0
+	while if_up || [ -d "/sys/class/net/$TUNDEV" ]; do
+		[ "$n" -ge 20 ] && break
+		n=$((n + 1))
+		sleep 1
+	done
+	if if_up || [ -d "/sys/class/net/$TUNDEV" ]; then
+		killall -TERM openconnect 2>/dev/null || true
+		sleep 1
+		ip link del "$TUNDEV" 2>/dev/null || true
+	fi
+	if_up && return 1
+	return 0
+}
+
+connect_in_progress() {
+	connecting_fresh && return 0
+	job_alive && return 0
+	return 1
+}
+
+connecting_fresh() {
+	local ts now
+	ts=$(cat "$CONNECTING_TS" 2>/dev/null)
+	[ -n "$ts" ] || return 1
+	now=$(now_ts)
+	[ $((now - ts)) -lt "$CONNECTING_TTL" ] 2>/dev/null
+}
+
+mark_connecting() {
+	mkdir_state
+	now_ts > "$CONNECTING_TS"
+}
+
+wait_previous_connect() {
+	local pid n=0
+	mkdir_state
+	echo 1 > "$STATE_DIR/connect.cancel"
+	while [ "$n" -lt 25 ]; do
+		pid=$(cat "$CONNECT_JOB" 2>/dev/null)
+		case "$pid" in
+			[1-9]*)
+				if [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
+					if [ "$n" -ge 20 ]; then
+						kill "$pid" 2>/dev/null || true
+					fi
+					n=$((n + 1))
+					sleep 1
+					continue
+				fi
+				;;
+		esac
+		break
+	done
+	pid=$(cat "$CONNECT_JOB" 2>/dev/null)
+	if [ -n "$pid" ] && [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
+		kill "$pid" 2>/dev/null || true
+		sleep 1
+	fi
+	wait_if_down
+}
+
+connect_begin() {
+	local pid
+	mkdir_state
+	pid=$(cat "$CONNECT_JOB" 2>/dev/null)
+	case "$pid" in
+		''|pending|0) ;;
+		$$) return 0 ;;
+		*)
+			if kill -0 "$pid" 2>/dev/null; then
+				log "connect skipped, already running pid=$pid"
+				return 1
+			fi
+			;;
+	esac
+	echo $$ > "$CONNECT_JOB"
+	return 0
+}
+
+connect_end() {
+	rm -f "$CONNECT_JOB" "$CONNECTING_TS"
+}
+
+ensure_wan_zone() {
+	local i=0 name found
+	while uci -q get "firewall.@zone[$i]" >/dev/null 2>&1; do
+		name=$(uci -q get "firewall.@zone[$i].name")
+		if [ "$name" = wan ]; then
+			found=$(uci -q get "firewall.@zone[$i].network" | grep -w "$IFNAME" || true)
+			if [ -z "$found" ]; then
+				uci -q add_list "firewall.@zone[$i].network=$IFNAME"
+				uci commit firewall
+				fw3 reload >/dev/null 2>&1 || /etc/init.d/firewall reload >/dev/null 2>&1 || true
+			fi
+			return 0
+		fi
+		i=$((i + 1))
+	done
+}
+
+clean_vpn_uci() {
+	uci -q delete "network.$IFNAME"
+}
+
+ensure_chn_rule() {
+	ip rule del pref "$CHN_RULE_PREF" 2>/dev/null || true
+	ip rule add pref "$CHN_RULE_PREF" lookup "$CHN_TABLE" 2>/dev/null || true
+}
+
+clear_split_routes() {
+	ip rule del pref "$CHN_RULE_PREF" 2>/dev/null || true
+	ip route flush table "$CHN_TABLE" 2>/dev/null || true
+	rm -f "$STATE_DIR/chn_routes.stamp"
+}
+
+apply_split_routes() {
+	local gw dev batch stamp cur
+	split_enabled || { clear_split_routes; return 0; }
+	[ -s "$CHN_FILE" ] || { log "chnroutes file missing"; return 1; }
+	gw=$(trim_gw "$1")
+	[ -n "$gw" ] || gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$gw" ] || gw=$(wan_gw)
+	dev=$(cat "$STATE_DIR/wan_dev" 2>/dev/null)
+	[ -n "$dev" ] || dev=$(wan_dev)
+	[ -n "$gw" ] && [ -n "$dev" ] || return 1
+	ensure_chn_rule
+	stamp=$(md5sum "$CHN_FILE" 2>/dev/null | awk '{print $1}')
+	stamp="${stamp}_${gw}_${dev}"
+	cur=$(cat "$STATE_DIR/chn_routes.stamp" 2>/dev/null)
+	if [ "$stamp" = "$cur" ]; then
+		[ "$(ip route show table "$CHN_TABLE" 2>/dev/null | grep -cE '^[0-9]')" -ge 50 ] 2>/dev/null && return 0
+	fi
+	batch=/tmp/vps000-chn.batch
+	awk -v gw="$gw" -v dev="$dev" -v tid="$CHN_TABLE" '
+		/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\/[0-9]+$/ {
+			printf "route replace %s via %s dev %s table %s\n", $1, gw, dev, tid
+		}' "$CHN_FILE" > "$batch"
+	ip route flush table "$CHN_TABLE" 2>/dev/null || true
+	if ip -batch "$batch" 2>/dev/null; then
+		mkdir_state
+		echo "$stamp" > "$STATE_DIR/chn_routes.stamp"
+		log "chnroutes applied via $gw dev $dev"
+		return 0
+	fi
+	log "chnroutes ip -batch failed"
+	return 1
+}
+
+apply_routes() {
+	apply_policy
+}
+
+apply_policy() {
+	local gw sip
+	gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$gw" ] || gw=$(wan_gw)
+	sip=$(cat "$STATE_DIR/endpoint_ip" 2>/dev/null)
+	[ -n "$sip" ] && [ -n "$gw" ] && pin_host_via_wan "$sip" "$gw"
+	pin_host_via_wan "$(vpn_server)" "$gw"
+	pin_host_via_wan login.wsdwan.com "$gw"
+	pin_host_via_wan node.vps000.org "$gw"
+	pin_host_via_wan www.vps000.org "$gw"
+	pin_host_via_wan "$(cat "$STATE_DIR/endpoint_host" 2>/dev/null)" "$gw"
+	pin_dns_routes "$gw"
+	apply_upstream_dns
+	if wanted || if_up; then
+		pin_reserved_local "$gw"
+	fi
+	if split_enabled; then
+		if wanted || if_up; then
+			apply_split_routes "$gw"
+		fi
+	else
+		clear_split_routes
+	fi
+	if if_up; then
+		ensure_half_net
+		mark_connected_since
+	else
+		clear_half_net
+	fi
+	if leakprotect_active && ! if_up; then
+		apply_leak_default
+	else
+		clear_leak_default
+	fi
+	apply_killswitch
+}
+
+# Official desktop: 0.0.0.0/1 + 128.0.0.0/1 → TUN. Ignore server SplitIncludes.
+ensure_half_net() {
+	if_up || return 1
+	ip route replace 0.0.0.0/1 dev "$TUNDEV" 2>/dev/null || true
+	ip route replace 128.0.0.0/1 dev "$TUNDEV" 2>/dev/null || true
+}
+
+clear_half_net() {
+	ip route del 0.0.0.0/1 dev "$TUNDEV" 2>/dev/null || true
+	ip route del 128.0.0.0/1 dev "$TUNDEV" 2>/dev/null || true
+	ip -4 route del "$DNS_OV/32" dev "$TUNDEV" 2>/dev/null || true
+}
+
+job_alive() {
+	local pid
+	pid=$(cat "$CONNECT_JOB" 2>/dev/null)
+	case "$pid" in
+		[1-9]*) kill -0 "$pid" 2>/dev/null ;;
+		*) return 1 ;;
+	esac
+}
+
+mark_connected_since() {
+	mkdir_state
+	[ -s "$STATE_DIR/connected.since" ] || date +%s > "$STATE_DIR/connected.since"
+}
+
+clear_connected_since() {
+	rm -f "$STATE_DIR/connected.since"
+}
+
+connected_uptime() {
+	local now since
+	[ -s "$STATE_DIR/connected.since" ] || { printf '0'; return 0; }
+	if_up || { printf '0'; return 0; }
+	now=$(now_ts)
+	since=$(cat "$STATE_DIR/connected.since" 2>/dev/null)
+	[ -n "$now" ] && [ -n "$since" ] || { printf '0'; return 0; }
+	printf '%s' $((now - since))
+}
+
+reconnect_attempts() {
+	cat "$STATE_DIR/reconnect.n" 2>/dev/null || echo 0
+}
+
+bump_reconnect() {
+	local n
+	n=$(reconnect_attempts)
+	n=$((n + 1))
+	mkdir_state
+	echo "$n" > "$STATE_DIR/reconnect.n"
+	printf '%s' "$n"
+}
+
+reset_reconnect_if_stable() {
+	local up
+	up=$(connected_uptime)
+	[ "$up" -ge "$STABLE_SECS" ] 2>/dev/null && echo 0 > "$STATE_DIR/reconnect.n"
+}
+
+write_status() {
+	local state msg account enable split ip loc pending acc_end acc_plan acc_exp
+	mkdir_state
+	account=$(uci_get account)
+	enable=$(uci_get enable)
+	split=$(uci_get split)
+	[ -n "$enable" ] || enable=0
+	[ -n "$split" ] || split=1
+	if type maybe_refresh_account >/dev/null 2>&1; then
+		maybe_refresh_account
+		acc_end=$(account_end 2>/dev/null)
+		acc_plan=$(account_plan 2>/dev/null)
+		acc_exp=$(account_expired 2>/dev/null)
+	fi
+	pending=0
+	if connect_in_progress; then
+		pending=1
+	fi
+	uptime_s=$(connected_uptime)
+	tries=$(reconnect_attempts)
+	ip=
+	loc=
+	if [ "$pending" = "1" ]; then
+		state=pending
+		if [ "$tries" -gt 0 ] 2>/dev/null; then
+			msg="正在重连（${tries}/${RECONNECT_MAX}）"
+		else
+			msg="正在连接"
+		fi
+	elif if_up && wanted; then
+		state=up
+		msg="已连接"
+		ip=$(exit_ip_cached)
+		loc=$(exit_loc_cached)
+		maybe_refresh_exit_ip
+		reset_reconnect_if_stable
+	elif if_up; then
+		# tun still draining after disconnect — never show the old egress
+		state=off
+		msg="未连接"
+		clear_exit_ip
+	elif wanted && [ "$tries" -ge "$RECONNECT_MAX" ] 2>/dev/null; then
+		state=err
+		msg="重连已达上限，请手动连接"
+		clear_exit_ip
+	elif wanted && leakprotect_active; then
+		state=pending
+		msg="线路中断，已拦截泄露，准备重连"
+		clear_exit_ip
+	elif [ -s "$CONNECT_RESULT" ] && grep -q '"ok":false' "$CONNECT_RESULT" 2>/dev/null; then
+		state=err
+		msg=$(sed -n 's/.*"msg":"\([^"]*\)".*/\1/p' "$CONNECT_RESULT" | head -1)
+		[ -n "$msg" ] || msg="连接失败"
+		clear_exit_ip
+	else
+		state=off
+		msg="未连接"
+		[ -f "$STATE_DIR/exit_ip" ] && clear_exit_ip
+	fi
+	json_out "{\"ok\":true,\"state\":\"$state\",\"msg\":\"$(json_escape "$msg")\",\"account\":\"$(json_escape "$account")\",\"enable\":\"$enable\",\"split\":\"$split\",\"killswitch\":\"$(killswitch_enabled && echo 1 || echo 0)\",\"connected\":\"$( [ "$state" = up ] && echo 1 || echo 0 )\",\"pending\":\"$pending\",\"ip\":\"$(json_escape "$ip")\",\"loc\":\"$(json_escape "$loc")\",\"expire\":\"$(json_escape "$acc_end")\",\"plan\":\"$(json_escape "$acc_plan")\",\"expired\":\"$(json_escape "$acc_exp")\",\"node\":\"$(json_escape "$(current_node)")\",\"region\":\"$(json_escape "$(node_display_name)")\",\"uptime\":\"$uptime_s\",\"proto\":\"anyconnect\",\"retry\":\"$tries\"}" > "$STATUS_JSON"
+	now_ts > "$STATUS_TS"
+	cat "$STATUS_JSON"
+}
+
+cmd_status() {
+	local written now
+	if connect_in_progress || [ ! -s "$STATUS_JSON" ]; then
+		write_status
+		return
+	fi
+	written=$(cat "$STATUS_TS" 2>/dev/null || echo 0)
+	now=$(now_ts)
+	if [ $((now - written)) -ge 5 ] 2>/dev/null; then
+		write_status
+		return
+	fi
+	cat "$STATUS_JSON"
+}
+
+cmd_nodes() {
+	local cur first id name url grp
+	mkdir_state
+	if [ "$1" = refresh ]; then
+		fetch_profile force >/dev/null 2>&1 || true
+	else
+		fetch_profile >/dev/null 2>&1 || true
+	fi
+	parse_profile > "$STATE_DIR/nodes.tsv" 2>/dev/null || true
+	cur=$(current_node)
+	first=1
+	printf '{"ok":true,"node":"%s","nodes":[' "$(json_escape "$cur")"
+	while IFS="$(printf '\t')" read id name url grp; do
+		[ -n "$id" ] || continue
+		[ "$first" = 1 ] || printf ','
+		first=0
+		printf '{"id":"%s","name":"%s","url":"%s","group":"%s"}' \
+			"$(json_escape "$id")" "$(json_escape "$name")" "$(json_escape "$url")" "$(json_escape "$grp")"
+	done < "$STATE_DIR/nodes.tsv"
+	printf ']}\n'
+}
+
+cmd_connect() {
+	local account password url host gw replace
+	replace=
+	[ "$1" = replace ] && replace=1
+	account=$(normalize_account "$(uci_get account)") || {
+		json_out '{"ok":false,"msg":"请填写账号"}'
+		return 1
+	}
+	password=$(normalize_password "$(uci_get password)") || {
+		json_out '{"ok":false,"msg":"请填写密码"}'
+		return 1
+	}
+
+	mkdir_state
+	if [ "$replace" = 1 ]; then
+		mark_connecting
+		clear_exit_ip
+		echo 0 > "$STATE_DIR/reconnect.n"
+		wait_previous_connect
+	fi
+	connect_begin || {
+		json_out '{"ok":true,"pending":true,"msg":"正在连接"}'
+		return 0
+	}
+	rm -f "$STATE_DIR/connect.cancel"
+	rm -f "$CONNECT_RESULT"
+	clear_exit_ip
+	clear_connected_since
+	set_want 1
+	save_wan_default
+	save_wan_dns
+	wait_wan || log "WAN gateway not ready, continue"
+	gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$gw" ] || gw=$(wan_gw)
+	fetch_profile >/dev/null 2>&1 || true
+	url=$(resolve_connect_url "$(node_src_url)")
+	case "$url" in
+		https://*|http://*) ;;
+		*)
+			connect_end
+			json_out '{"ok":false,"msg":"节点地址无效"}' | tee "$CONNECT_RESULT"
+			write_status >/dev/null
+			return 1
+			;;
+	esac
+	host=$(url_host "$url")
+	echo "$host" > "$STATE_DIR/endpoint_host"
+	echo "$url" > "$STATE_DIR/endpoint_url"
+	pin_host_via_wan "$host" "$gw"
+	pin_host_via_wan node.vps000.org "$gw"
+	pin_host_via_wan login.wsdwan.com "$gw"
+
+	ifdown "$IFNAME" >/dev/null 2>&1 || true
+	wait_if_down
+	clear_exit_ip
+	clean_vpn_uci
+
+	uci -q set "network.${IFNAME}=interface"
+	uci -q set "network.${IFNAME}.proto=openconnect"
+	uci -q set "network.${IFNAME}.server=$url"
+	uci -q delete "network.${IFNAME}.port" 2>/dev/null || true
+	uci -q set "network.${IFNAME}.username=$account"
+	uci -q set "network.${IFNAME}.password=$password"
+	uci -q delete "network.${IFNAME}.authgroup" 2>/dev/null || true
+	grp=$(node_authgroup)
+	[ -n "$grp" ] && uci -q set "network.${IFNAME}.authgroup=$grp"
+	uci -q set "network.${IFNAME}.auto=0"
+	uci commit network
+
+	ensure_wan_zone
+	ifup "$IFNAME"
+
+	if ! wait_if_up; then
+		if [ -f "$STATE_DIR/connect.cancel" ]; then
+			ifdown "$IFNAME" >/dev/null 2>&1 || true
+			wait_if_down
+			connect_end
+			return 1
+		fi
+		connect_end
+		json_out '{"ok":false,"msg":"VPN 连接失败，请检查账号密码或网络"}' | tee "$CONNECT_RESULT"
+		write_status >/dev/null
+		return 1
+	fi
+
+	apply_policy
+	echo 0 > "$STATE_DIR/reconnect.n"
+	date +%s > "$STATE_DIR/connected.since"
+	fetch_exit_ip >/dev/null 2>&1 || true
+	if ! if_up; then
+		connect_end
+		json_out '{"ok":false,"msg":"VPN 连接失败，请检查账号密码或网络"}' | tee "$CONNECT_RESULT"
+		write_status >/dev/null
+		return 1
+	fi
+	connect_end
+	log "connected node=$(current_node) url=$url account=$account"
+	json_out "{\"ok\":true,\"msg\":\"已连接\",\"node\":\"$(json_escape "$(current_node)")\",\"region\":\"$(json_escape "$(node_display_name)")\"}" | tee "$CONNECT_RESULT"
+	write_status >/dev/null
+}
+
+cmd_disconnect() {
+	mkdir_state
+	echo 1 > "$STATE_DIR/connect.cancel"
+	ifdown "$IFNAME" >/dev/null 2>&1 || true
+	wait_if_down
+	clear_exit_ip
+	clean_vpn_uci
+	uci commit network
+	connect_end
+	rm -f "$CONNECT_RESULT" "$STATE_DIR/endpoint_ip" "$STATE_DIR/reconnect.n"
+	clear_connected_since
+	clear_half_net
+	if [ "$KEEP_WANT" = "1" ]; then
+		apply_policy >/dev/null 2>&1 || true
+	else
+		set_want 0
+		clear_leak_default
+		clear_split_routes
+		unpin_reserved_local
+		ks_clear
+		restore_wan_default
+		rm -f "$STATE_DIR/upstream_dns" "$STATE_DIR/dns_fp"
+		apply_upstream_dns
+	fi
+	log "disconnected"
+	json_out '{"ok":true,"msg":"已断开"}'
+	write_status >/dev/null
+}
+
+cmd_login() {
+	cmd_connect
+}
+
+# After a reboot /var/run is empty. Resume VPN only if 「开机连接」 is on.
+boot_sync_want() {
+	mkdir_state
+	[ -f "$STATE_DIR/booted" ] && return 0
+	if [ "$(uci_get enable)" = "1" ]; then
+		wanted || set_want 1
+	else
+		set_want 0
+	fi
+	echo 1 > "$STATE_DIR/booted"
+}
+
+cmd_autostart() {
+	[ "$(uci_get enable)" = "1" ] || return 0
+	if if_up; then
+		apply_routes
+		return 0
+	fi
+	[ -n "$(uci_get account)" ] || return 0
+	[ -n "$(uci_get password)" ] || return 0
+	mkdir_state
+	echo 0 > "$STATE_DIR/reconnect.n"
+	cmd_connect
+}
+
+cmd_watch() {
+	local waitn n
+	boot_sync_want
+	apply_upstream_dns >/dev/null 2>&1 || true
+	while true; do
+		waitn=$WATCH_SLEEP
+		if wanted || [ "$(uci_get enable)" = "1" -a "$(uci_get want)" != "0" ]; then
+			if connect_in_progress; then
+				waitn=2
+			elif if_up; then
+				apply_policy >/dev/null 2>&1 || true
+				reset_reconnect_if_stable
+			else
+				clear_connected_since
+				apply_policy >/dev/null 2>&1 || true
+				n=$(reconnect_attempts)
+				if [ "$n" -lt "$RECONNECT_MAX" ] 2>/dev/null; then
+					waitn=$RECONNECT_DELAY
+					bump_reconnect >/dev/null
+					cmd_connect >/dev/null 2>&1 || true
+				else
+					waitn=$WATCH_SLEEP
+				fi
+			fi
+		fi
+		write_status >/dev/null 2>&1 || true
+		sleep "$waitn"
+	done
+}
+
+cmd_set() {
+	case "$1" in
+		account) set_account "$2" "$3" ;;
+		enable) set_enable "$2" ;;
+		split) set_split "$2" ;;
+		killswitch) set_killswitch "$2" ;;
+		server) set_server "$2" ;;
+		node) set_node "$2" ;;
+		want) set_want "$2" ;;
+		*) echo "usage: vps000 set account|enable|split|killswitch|server|node|want ..." >&2; return 1 ;;
+	esac
+}
+
+usage() {
+	echo "usage: vps000 login|connect [replace]|disconnect|status|nodes|account|order|order-status|logoff|autostart|watch|routes|killswitch|set|update"
+}
+
+case "$1" in
+	login) cmd_login ;;
+	connect) shift; cmd_connect "$@" ;;
+	disconnect) cmd_disconnect ;;
+	status) cmd_status ;;
+	nodes) cmd_nodes ;;
+	account) cmd_account ;;
+	order) shift; cmd_order "$@" ;;
+	order-status) shift; cmd_order_status "$@" ;;
+	logoff) cmd_logoff ;;
+	autostart) cmd_autostart ;;
+	watch) cmd_watch ;;
+	routes) apply_policy; json_out '{"ok":true}' ;;
+	killswitch) apply_killswitch; json_out '{"ok":true}' ;;
+	set) shift; cmd_set "$@" ;;
+	update) shift; exec /usr/sbin/vps000-update "$@" ;;
+	*) usage; exit 1 ;;
+esac

@@ -1,0 +1,3 @@
+#!/bin/sh
+# fw3 include: re-apply leak-protect FORWARD rules after firewall reload.
+[ -x /usr/sbin/vps000 ] && /usr/sbin/vps000 killswitch >/dev/null 2>&1 || true

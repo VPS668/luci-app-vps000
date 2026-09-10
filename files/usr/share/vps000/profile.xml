@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<AnyConnectProfile xmlns="http://schemas.xmlsoap.org/encoding/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://schemas.xmlsoap.org/encoding/ AnyConnectProfile.xsd">
+	<ServerList>
+		<HostEntry>
+			<HostName>香港专线</HostName>
+			<HostAddress>https://node.vps000.org/?node=hkg</HostAddress>
+		</HostEntry>
+		<HostEntry>
+			<HostName>台湾专线</HostName>
+			<HostAddress>https://node.vps000.org/?node=twg</HostAddress>
+		</HostEntry>
+		<HostEntry>
+			<HostName>日本专线</HostName>
+			<HostAddress>https://node.vps000.org/?node=jpg</HostAddress>
+		</HostEntry>
+		<HostEntry>
+			<HostName>美国专线</HostName>
+			<HostAddress>https://node.vps000.org/?node=usg</HostAddress>
+		</HostEntry>
+		<HostEntry>
+			<HostName>新加坡专线</HostName>
+			<HostAddress>https://node.vps000.org/?node=sgg</HostAddress>
+		</HostEntry>
+	</ServerList>
+</AnyConnectProfile>

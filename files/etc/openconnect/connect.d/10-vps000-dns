@@ -1,0 +1,18 @@
+# Sourced by vpnc-script. Do not exit.
+# Persist VPN-pushed DNS before netifd overwrites resolv.conf.auto.
+[ "$INTERFACE" = "vps000" ] || [ "$TUNDEV" = "vpn-vps000" ] || return 0
+mkdir -p /var/run/vps000
+_tmp=/var/run/vps000/upstream_dns.tmp
+: > "$_tmp"
+for _d in $INTERNAL_IP4_DNS; do
+	case "$_d" in
+		[0-9]*.[0-9]*.[0-9]*.[0-9]*) echo "$_d" >> "$_tmp" ;;
+	esac
+done
+if [ -s "$_tmp" ]; then
+	mv "$_tmp" /var/run/vps000/upstream_dns
+else
+	rm -f "$_tmp"
+fi
+unset _tmp _d
+return 0

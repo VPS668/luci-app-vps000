@@ -1,0 +1,275 @@
+<%#
+	VPS000 GitHub 更新
+-%>
+<%+header%>
+
+<style type="text/css">
+	#vps000-upd { max-width: 860px; }
+	#vps000-upd .vps-head { margin: 0 0 16px; }
+	#vps000-upd .vps-head h2 { margin: 0 0 4px; }
+	#vps000-upd .vps-sub { color: #5d6d7e; margin: 0; font-size: 13px; }
+	#vps000-upd .vps-grid { overflow: hidden; margin: 0 -8px 8px; }
+	#vps000-upd .vps-col { float: left; width: 50%; box-sizing: border-box; padding: 0 8px; }
+	#vps000-upd .vps-card {
+		background: #fff;
+		border: 1px solid #e1e6eb;
+		border-radius: 10px;
+		padding: 16px;
+		margin: 0 0 16px;
+		min-height: 210px;
+	}
+	#vps000-upd .vps-card h3 {
+		margin: 0 0 14px;
+		padding: 0 0 10px;
+		border-bottom: 1px solid #eef2f5;
+		font-size: 14px;
+	}
+	#vps000-upd .vps-k { display: block; font-size: 11px; color: #8aa0b3; margin: 8px 0 2px; }
+	#vps000-upd .vps-v { color: #1e2d3b; font-size: 13px; word-break: break-all; }
+	#vps000-upd .vps-msg { min-height: 1.2em; margin: 0 0 14px; color: #5d6d7e; }
+	#vps000-upd .vps-msg-ok { color: #27ae60; }
+	#vps000-upd .vps-msg-err { color: #e74c3c; }
+	#vps000-upd .vps-msg-wait { color: #d68910; }
+	#vps000-upd .vps-bar { padding: 8px 0 0; }
+	#vps000-upd .vps-bar .cbi-button { min-width: 110px; margin-right: 8px; margin-bottom: 8px; }
+	#vps000-upd .vps-notes {
+		white-space: pre-wrap;
+		background: #f8f9fa;
+		border-radius: 8px;
+		padding: 12px;
+		font-size: 12px;
+		color: #1e2d3b;
+		max-height: 280px;
+		overflow: auto;
+	}
+	#vps000-upd .vps-pill {
+		display: inline-block;
+		padding: 2px 8px;
+		border-radius: 10px;
+		font-size: 12px;
+		background: #eef2f5;
+		color: #5d6d7e;
+	}
+	#vps000-upd .vps-pill-ok { background: #e8f8ef; color: #1e8449; }
+	#vps000-upd .vps-pill-warn { background: #fef5e7; color: #b9770e; }
+	@media screen and (max-width: 720px) {
+		#vps000-upd .vps-col { width: 100%; }
+		#vps000-upd .vps-card { min-height: 0; }
+	}
+</style>
+
+<div id="vps000-upd">
+	<div class="vps-head">
+		<h2 name="content">更新</h2>
+		<p class="vps-sub">从 GitHub Release 检查并安装软件包或整包固件。仓库 vps668/luci-app-vps000。</p>
+	</div>
+	<div id="vps-upd-msg" class="vps-msg">尚未检查。</div>
+	<div class="vps-bar">
+		<input type="button" class="cbi-button cbi-button-apply" id="vps-upd-check" value="检查更新" />
+		<input type="button" class="cbi-button cbi-button-reset" id="vps-upd-cancel" value="取消下载" style="display:none" />
+	</div>
+	<div class="vps-grid">
+		<div class="vps-col">
+			<div class="vps-card">
+				<h3>软件包</h3>
+				<span class="vps-k">当前</span><span class="vps-v" id="vps-loc-pkg">—</span>
+				<span class="vps-k">最新</span><span class="vps-v" id="vps-rem-pkg">—</span>
+				<span class="vps-k">状态</span><span class="vps-pill" id="vps-st-pkg">未检查</span>
+				<div class="vps-bar">
+					<input type="button" class="cbi-button cbi-button-apply" id="vps-upd-ipk" value="更新软件包" disabled="disabled" />
+				</div>
+			</div>
+		</div>
+		<div class="vps-col">
+			<div class="vps-card">
+				<h3>固件</h3>
+				<span class="vps-k">当前</span><span class="vps-v" id="vps-loc-fw">—</span>
+				<span class="vps-k">最新</span><span class="vps-v" id="vps-rem-fw">—</span>
+				<span class="vps-k">机型</span><span class="vps-v" id="vps-board">—</span>
+				<span class="vps-k">状态</span><span class="vps-pill" id="vps-st-fw">未检查</span>
+				<div class="vps-bar">
+					<input type="button" class="cbi-button cbi-button-apply" id="vps-upd-fw" value="更新固件" disabled="disabled" />
+				</div>
+			</div>
+		</div>
+	</div>
+	<div class="vps-card">
+		<h3>更新说明</h3>
+		<pre class="vps-notes" id="vps-notes">检查更新后显示 GitHub Release 说明。</pre>
+	</div>
+</div>
+
+<script type="text/javascript">//<![CDATA[
+(function() {
+	var U_ST = '<%=luci.dispatcher.build_url("admin", "vps000", "update_status")%>';
+	var U_CK = '<%=luci.dispatcher.build_url("admin", "vps000", "update_check")%>';
+	var U_AP = '<%=luci.dispatcher.build_url("admin", "vps000", "update_apply")%>';
+	var U_CA = '<%=luci.dispatcher.build_url("admin", "vps000", "update_cancel")%>';
+	var U_PR = '<%=luci.dispatcher.build_url("admin", "vps000", "update_progress")%>';
+	var timer = null;
+	var posted = false;
+	var fwConfirm = false;
+
+	function $(id) { return document.getElementById(id); }
+
+	function post(url, data, cb) {
+		var x = new XMLHttpRequest();
+		var body = [];
+		var k;
+		x.open('POST', url, true);
+		x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+		x.onreadystatechange = function() {
+			if (x.readyState == 4) cb(x.status, x.responseText);
+		};
+		for (k in data) {
+			if (data.hasOwnProperty(k) && data[k] !== null && data[k] !== undefined)
+				body.push(encodeURIComponent(k) + '=' + encodeURIComponent(data[k]));
+		}
+		x.send(body.join('&'));
+	}
+
+	function parse(t) {
+		try { return eval('(' + t + ')'); } catch (e) { return null; }
+	}
+
+	function setMsg(text, kind) {
+		var el = $('vps-upd-msg');
+		el.className = 'vps-msg' + (kind ? ' vps-msg-' + kind : '');
+		el.innerHTML = text || '';
+	}
+
+	function pill(el, text, kind) {
+		el.className = 'vps-pill' + (kind ? ' vps-pill-' + kind : '');
+		el.innerHTML = text;
+	}
+
+	function errText(code) {
+		if (code == 'github') return '无法访问 GitHub，请检查 WAN。';
+		if (code == 'parse') return '更新信息不正确。';
+		if (code == 'download') return '下载失败。';
+		if (code == 'install') return '软件包安装失败。';
+		if (code == 'image') return '固件不适用于本机。';
+		if (code == 'no-vps000') return '此版本没有软件包。';
+		if (code == 'no-firmware') return '此版本没有本机固件。';
+		if (code == 'busy') return '已有更新在进行。';
+		if (code == 'cancelled') return '已取消。';
+		return code ? '更新失败。' : '';
+	}
+
+	function busyPhase(p) {
+		return p == 'downloading' || p == 'installing' || p == 'rebooting' || p == 'checking';
+	}
+
+	function paint(st) {
+		st = st || {};
+		var loc = st.local_ver || {};
+		var rem = st.remote || {};
+		var pkg = rem.vps000 || {};
+		var fw = rem.firmware || {};
+		var phase = st.phase || 'idle';
+		var fetching = !!(st.fetching || phase == 'checking');
+		var busy = busyPhase(phase);
+		$('vps-loc-pkg').innerHTML = loc.vps000 || '—';
+		$('vps-loc-fw').innerHTML = loc.firmware || '—';
+		$('vps-board').innerHTML = loc.board || '—';
+		$('vps-rem-pkg').innerHTML = pkg.version || '—';
+		$('vps-rem-fw').innerHTML = fw.version || '—';
+		$('vps-notes').innerHTML = rem.notes || '检查更新后显示 GitHub Release 说明。';
+
+		if (!rem.tag && !st.checked_at)
+			pill($('vps-st-pkg'), fetching ? '检查中…' : '未检查', 'warn');
+		else if (pkg.newer == 1 || pkg.newer === true)
+			pill($('vps-st-pkg'), '有新版本', 'warn');
+		else if (pkg.version)
+			pill($('vps-st-pkg'), '已是最新', 'ok');
+		else
+			pill($('vps-st-pkg'), '无软件包', 'warn');
+
+		if (!rem.tag && !st.checked_at)
+			pill($('vps-st-fw'), fetching ? '检查中…' : '未检查', 'warn');
+		else if (fw.newer == 1 || fw.newer === true)
+			pill($('vps-st-fw'), '有新版本', 'warn');
+		else if (fw.compatible === false || fw.compatible == 0)
+			pill($('vps-st-fw'), '无本机镜像', 'warn');
+		else if (fw.version)
+			pill($('vps-st-fw'), '已是最新', 'ok');
+		else
+			pill($('vps-st-fw'), '无固件', 'warn');
+
+		$('vps-upd-check').disabled = busy || fetching;
+		$('vps-upd-ipk').disabled = busy || !(pkg.newer == 1 || pkg.newer === true);
+		$('vps-upd-fw').disabled = busy || !(fw.newer == 1 || fw.newer === true);
+		$('vps-upd-cancel').style.display = (phase == 'downloading') ? '' : 'none';
+
+		if (phase == 'rebooting')
+			setMsg('正在升级固件，请勿断电。设备会自行重启。', 'wait');
+		else if (phase == 'downloading')
+			setMsg('正在下载…请勿断电或刷新。', 'wait');
+		else if (phase == 'installing')
+			setMsg('正在安装软件包…', 'wait');
+		else if (phase == 'checking' || fetching)
+			setMsg('正在检查 GitHub Release…', 'wait');
+		else if (st.error == 'cancelled')
+			setMsg('已取消。', '');
+		else if (st.error && phase == 'error')
+			setMsg(errText(st.error), 'err');
+		else if (phase == 'done')
+			setMsg('更新完成。', 'ok');
+		else if (st.checked_at)
+			setMsg('已检查。Release ' + (rem.tag || ''), 'ok');
+		else
+			setMsg('尚未检查。', '');
+	}
+
+	function refresh() {
+		post(U_ST, {}, function(code, text) {
+			paint(parse(text) || {});
+		});
+	}
+
+	function schedule() {
+		if (timer) window.clearTimeout(timer);
+		timer = window.setTimeout(function() { refresh(); schedule(); }, 2000);
+	}
+
+	$('vps-upd-check').onclick = function() {
+		if (posted) return;
+		posted = true;
+		setMsg('正在检查 GitHub Release…', 'wait');
+		post(U_CK, {}, function() {
+			posted = false;
+			refresh();
+		});
+	};
+	$('vps-upd-ipk').onclick = function() {
+		if (posted) return;
+		posted = true;
+		post(U_AP, { target: 'ipk' }, function() {
+			posted = false;
+			refresh();
+		});
+	};
+	$('vps-upd-fw').onclick = function() {
+		if (posted) return;
+		if (!fwConfirm) {
+			fwConfirm = true;
+			this.value = '确认更新固件';
+			setMsg('将保留配置并重启。确认后开始下载。', 'wait');
+			return;
+		}
+		posted = true;
+		post(U_AP, { target: 'firmware' }, function() {
+			posted = false;
+			refresh();
+		});
+	};
+	$('vps-upd-cancel').onclick = function() {
+		post(U_CA, {}, function() { refresh(); });
+	};
+
+	refresh();
+	schedule();
+})();
+//]]></script>
+
+<%+footer%>
