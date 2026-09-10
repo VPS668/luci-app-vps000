@@ -1,5 +1,5 @@
 <%#
-	VPS000 GitHub 更新
+	VPS000 更新
 -%>
 <%+header%>
 
@@ -120,7 +120,7 @@
 	</div>
 	<div class="vps-card">
 		<h3>更新说明</h3>
-		<pre class="vps-notes" id="vps-notes">检查更新后显示 GitHub Release 说明。</pre>
+		<pre class="vps-notes" id="vps-notes">检查更新后显示版本说明。</pre>
 	</div>
 </div>
 
@@ -242,7 +242,7 @@
 	}
 
 	function errText(code) {
-		if (code == 'github') return '无法访问 GitHub，请检查 WAN。';
+		if (code == 'github') return '无法连接版本控制服务器，请检查网络。';
 		if (code == 'parse') return '更新信息不正确。';
 		if (code == 'download') return '下载失败。';
 		if (code == 'install') return '软件包安装失败。';
@@ -273,7 +273,7 @@
 		$('vps-board').innerHTML = loc.board || '—';
 		$('vps-rem-pkg').innerHTML = pkg.version || '—';
 		$('vps-rem-fw').innerHTML = fw.version || '—';
-		$('vps-notes').innerHTML = rem.notes || '检查更新后显示 GitHub Release 说明。';
+		$('vps-notes').innerHTML = rem.notes || '检查更新后显示版本说明。';
 
 		if (!rem.tag && !st.checked_at)
 			pill($('vps-st-pkg'), fetching ? '检查中…' : '未检查', 'warn');
@@ -314,7 +314,7 @@
 		} else if (phase == 'installing')
 			setMsg('正在安装软件包…', 'wait');
 		else if (phase == 'checking' || fetching)
-			setMsg('正在检查 GitHub Release…', 'wait');
+			setMsg('正在检查更新…', 'wait');
 		else if (st.error == 'cancelled')
 			setMsg('已取消。', '');
 		else if (st.error && phase == 'error')
@@ -322,7 +322,7 @@
 		else if (phase == 'done')
 			setMsg('更新完成。', 'ok');
 		else if (st.checked_at)
-			setMsg('已检查。Release ' + (rem.tag || ''), 'ok');
+			setMsg('已检查更新。', 'ok');
 		else
 			setMsg('尚未检查。', '');
 	}
@@ -341,7 +341,7 @@
 	$('vps-upd-check').onclick = function() {
 		if (posted) return;
 		posted = true;
-		setMsg('正在检查 GitHub Release…', 'wait');
+		setMsg('正在检查更新…', 'wait');
 		post(U_CK, {}, function() {
 			posted = false;
 			refresh();
