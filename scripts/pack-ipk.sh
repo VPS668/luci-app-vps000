@@ -1,5 +1,5 @@
 #!/bin/sh
-# Pack luci-app-vps000 as a PKGARCH=all ipk without the full OpenWrt SDK.
+# Pack luci-app-vps000 as a PKGARCH=all ipk (OpenWrt 14.07 ipkg-build -c format).
 set -e
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -11,6 +11,7 @@ VER="${PKG_VERSION}-${PKG_RELEASE}"
 OUTDIR="${1:-$ROOT/release}"
 WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT
+TAR="tar --format=gnu --owner=0 --group=0 --numeric-owner"
 
 mkdir -p "$WORKDIR/data" "$WORKDIR/ctrl" "$OUTDIR"
 cp -a files/. "$WORKDIR/data/"
@@ -25,7 +26,8 @@ PKG_IMAGE_VERSION=$(sed -n 's/^PKG_IMAGE_VERSION:=//p' Makefile | head -1)
 printf 'VPS000_VERSION=%s\nVPS000_IMAGE=%s\nVPS000_REPO=vps668/luci-app-vps000\nVPS000_BOARD=mt7628\n' \
 	"$VER" "$PKG_IMAGE_VERSION" > "$WORKDIR/data/usr/share/vps000/version"
 
-SIZE=$(du -sb "$WORKDIR/data" | awk '{print $1}')
+$TAR -czpf "$WORKDIR/data.tar.gz" -C "$WORKDIR/data" .
+SIZE=$(wc -c < "$WORKDIR/data.tar.gz" | awk '{print $1}')
 
 cat > "$WORKDIR/ctrl/control" <<EOF
 Package: ${PKG_NAME}
@@ -52,10 +54,10 @@ exit 0
 EOF
 chmod 0755 "$WORKDIR/ctrl/postinst"
 
-echo 2.0 > "$WORKDIR/debian-binary"
-tar -C "$WORKDIR/data" --owner=0 --group=0 -czf "$WORKDIR/data.tar.gz" .
-tar -C "$WORKDIR/ctrl" --owner=0 --group=0 -czf "$WORKDIR/control.tar.gz" .
+echo "2.0" > "$WORKDIR/debian-binary"
+$TAR -czf "$WORKDIR/control.tar.gz" -C "$WORKDIR/ctrl" .
 IPK="${OUTDIR}/${PKG_NAME}_${VER}_all.ipk"
 rm -f "$IPK"
-tar -C "$WORKDIR" --owner=0 --group=0 -cf "$IPK" debian-binary data.tar.gz control.tar.gz
+# Outer gzip tar with ./ members — same as OpenWrt 14.07 `ipkg-build -c`.
+( cd "$WORKDIR" && $TAR -zcf "$IPK" ./debian-binary ./data.tar.gz ./control.tar.gz )
 echo "$IPK"

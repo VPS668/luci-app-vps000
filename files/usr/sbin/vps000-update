@@ -182,8 +182,8 @@ asset_url() {
 
 parse_and_write() {
 	local src="$1" err="$2" phase="$3"
-	local tag notes pkg_ver pkg_file pkg_url pkg_sha pkg_sz
-	local fw_ver fw_file fw_url fw_sha fw_board fw_sz
+	local tag notes pkg_ver pkg_file pkg_url pkg_sha pkg_md5 pkg_sz
+	local fw_ver fw_file fw_url fw_sha fw_md5 fw_board fw_sz
 	local pkg_newer fw_newer fw_ok name url asz
 	local repo lv_pkg lv_fw board
 
@@ -202,12 +202,14 @@ parse_and_write() {
 	pkg_file=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.vps000.filename' 2>/dev/null)
 	pkg_url=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.vps000.url' 2>/dev/null)
 	pkg_sha=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.vps000.sha256' 2>/dev/null)
+	pkg_md5=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.vps000.md5' 2>/dev/null)
 	pkg_sz=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.vps000.size' 2>/dev/null)
 
 	fw_ver=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.version' 2>/dev/null)
 	fw_file=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.filename' 2>/dev/null)
 	fw_url=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.url' 2>/dev/null)
 	fw_sha=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.sha256' 2>/dev/null)
+	fw_md5=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.md5' 2>/dev/null)
 	fw_board=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.board' 2>/dev/null)
 	fw_sz=$(jsonfilter -s "$(cat "$BODY" 2>/dev/null)" -e '@.firmware.size' 2>/dev/null)
 
@@ -269,12 +271,12 @@ EOF
 		printf '"local_ver":{"vps000":"%s","firmware":"%s","board":"%s","repo":"%s"},' \
 			"$(json_escape "$lv_pkg")" "$(json_escape "$lv_fw")" "$(json_escape "$board")" "$(json_escape "$repo")"
 		printf '"remote":{"tag":"%s","notes":"%s",' "$(json_escape "$tag")" "$(json_escape "$notes")"
-		printf '"vps000":{"version":"%s","filename":"%s","url":"%s","sha256":"%s","size":%s,"newer":%s},' \
+		printf '"vps000":{"version":"%s","filename":"%s","url":"%s","sha256":"%s","md5":"%s","size":%s,"newer":%s},' \
 			"$(json_escape "$pkg_ver")" "$(json_escape "$pkg_file")" "$(json_escape "$pkg_url")" \
-			"$(json_escape "$pkg_sha")" "$pkg_sz" "$pkg_newer"
-		printf '"firmware":{"version":"%s","filename":"%s","url":"%s","sha256":"%s","size":%s,"board":"%s","compatible":%s,"newer":%s}}}' \
+			"$(json_escape "$pkg_sha")" "$(json_escape "$pkg_md5")" "$pkg_sz" "$pkg_newer"
+		printf '"firmware":{"version":"%s","filename":"%s","url":"%s","sha256":"%s","md5":"%s","size":%s,"board":"%s","compatible":%s,"newer":%s}}}' \
 			"$(json_escape "$fw_ver")" "$(json_escape "$fw_file")" "$(json_escape "$fw_url")" \
-			"$(json_escape "$fw_sha")" "$fw_sz" "$(json_escape "$fw_board")" "$fw_ok" "$fw_newer"
+			"$(json_escape "$fw_sha")" "$(json_escape "$fw_md5")" "$fw_sz" "$(json_escape "$fw_board")" "$fw_ok" "$fw_newer"
 		printf '\n'
 	} > "$CACHE.tmp"
 	mv -f "$CACHE.tmp" "$CACHE"
@@ -456,15 +458,29 @@ cache_field() {
 	jsonfilter -i "$CACHE" -e "$1" 2>/dev/null
 }
 
-verify_sha() {
-	local file="$1" want="$2" got
-	[ -n "$want" ] || return 0
-	got=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
-	[ "$got" = "$want" ]
+verify_file() {
+	local file="$1" want_sha="$2" want_md5="$3" got
+	[ -s "$file" ] || return 1
+	if [ -n "$want_sha" ]; then
+		got=$(sha256sum "$file" 2>/dev/null | awk '{print $1}')
+		if [ -z "$got" ] && command -v openssl >/dev/null 2>&1; then
+			got=$(openssl dgst -sha256 "$file" 2>/dev/null | awk '{print $NF}')
+		fi
+		if [ -n "$got" ]; then
+			[ "$got" = "$want_sha" ]
+			return $?
+		fi
+	fi
+	if [ -n "$want_md5" ]; then
+		got=$(md5sum "$file" 2>/dev/null | awk '{print $1}')
+		[ -n "$got" ] && [ "$got" = "$want_md5" ]
+		return $?
+	fi
+	return 0
 }
 
 cmd_apply() {
-	local target="$1" url sha rc sz
+	local target="$1" url sha md5 rc sz
 	case "$target" in
 		ipk|vps000|plugin) target=ipk ;;
 		firmware|fw) target=firmware ;;
@@ -490,6 +506,7 @@ cmd_apply() {
 		fi
 		url=$(cache_field '@.remote.vps000.url')
 		sha=$(cache_field '@.remote.vps000.sha256')
+		md5=$(cache_field '@.remote.vps000.md5')
 		sz=$(cache_field '@.remote.vps000.size')
 		case "$sz" in ''|*[!0-9]*) sz=0 ;; esac
 		[ -n "$url" ] || {
@@ -514,7 +531,7 @@ cmd_apply() {
 			trap - EXIT
 			return 1
 		fi
-		if ! verify_sha "$IPK_DEST" "$sha"; then
+		if ! verify_file "$IPK_DEST" "$sha" "$md5"; then
 			rm -f "$IPK_DEST"
 			set_phase error install
 			unlock_me
@@ -551,6 +568,7 @@ cmd_apply() {
 	fi
 	url=$(cache_field '@.remote.firmware.url')
 	sha=$(cache_field '@.remote.firmware.sha256')
+	md5=$(cache_field '@.remote.firmware.md5')
 	sz=$(cache_field '@.remote.firmware.size')
 	case "$sz" in ''|*[!0-9]*) sz=0 ;; esac
 	[ -n "$url" ] || {
@@ -575,7 +593,7 @@ cmd_apply() {
 		trap - EXIT
 		return 1
 	fi
-	if ! verify_sha "$FW_DEST" "$sha"; then
+	if ! verify_file "$FW_DEST" "$sha" "$md5"; then
 		rm -f "$FW_DEST"
 		set_phase error image
 		unlock_me
