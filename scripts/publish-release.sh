@@ -38,7 +38,9 @@ TAG="v$(printf '%s' "$VER" | sed 's/-.*//')"
 NOTES=$(cat "$ROOT/RELEASE_NOTES" 2>/dev/null || echo "${PKG_NAME} ${VER}")
 IPK_NAME=$(basename "$IPK")
 IPK_SHA=$(sha256sum "$IPK" | awk '{print $1}')
-cp -f "$IPK" "$ROOT/release/$IPK_NAME"
+if [ "$(readlink -f "$IPK")" != "$(readlink -f "$ROOT/release/$IPK_NAME")" ]; then
+	cp -f "$IPK" "$ROOT/release/$IPK_NAME"
+fi
 
 FW_JSON=""
 if [ -n "$FW" ] && [ -f "$FW" ]; then
