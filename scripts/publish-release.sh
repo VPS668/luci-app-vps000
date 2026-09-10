@@ -53,12 +53,10 @@ fi
 
 VER=$(basename "$IPK" | sed -n "s/^${PKG_NAME}_\\(.*\\)_all\\.ipk$/\\1/p")
 [ -n "$VER" ] || { echo "error: cannot parse version from $IPK" >&2; exit 1; }
-TAG="v$(printf '%s' "$VER" | sed 's/-.*//')"
-# Keep tag aligned with PKG_VERSION (1.3.1) even when release is 1.3.1-2
+TAG="v$VER"
 NOTES=$(cat "$ROOT/RELEASE_NOTES" 2>/dev/null || echo "${PKG_NAME} ${VER}")
 IPK_NAME=$(basename "$IPK")
-# Leave sha256 empty: Barrier Breaker has no sha256sum, so 1.3.1-6 still
-# skips checksum and can opkg-install this package. md5 is used from 1.3.1-7.
+# sha256 left empty: 14.07 has no sha256sum; md5 is checked on device.
 IPK_SHA=""
 IPK_MD5=$(md5sum "$IPK" | awk '{print $1}')
 IPK_SIZE=$(wc -c < "$IPK" | awk '{print $1}')

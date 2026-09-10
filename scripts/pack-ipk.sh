@@ -6,8 +6,7 @@ cd "$ROOT"
 
 PKG_NAME=luci-app-vps000
 PKG_VERSION=$(sed -n 's/^PKG_VERSION:=//p' Makefile | head -1)
-PKG_RELEASE=$(sed -n 's/^PKG_RELEASE:=//p' Makefile | head -1)
-VER="${PKG_VERSION}-${PKG_RELEASE}"
+VER="$PKG_VERSION"
 OUTDIR="${1:-$ROOT/release}"
 WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT
