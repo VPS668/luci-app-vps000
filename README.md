@@ -61,3 +61,5 @@ vps000 update check
 vps000 update apply ipk
 vps000 update apply firmware
 ```
+
+## pull test
