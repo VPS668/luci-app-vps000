@@ -246,7 +246,6 @@
 		<div class="vps-bar">
 			<input type="button" class="cbi-button cbi-button-apply" id="vps-pay-ali" value="支付宝续费" />
 			<input type="button" class="cbi-button" id="vps-pay-pp" value="PayPal续费" />
-			<input type="button" class="cbi-button" id="vps-pay-query" value="查询支付" />
 			<input type="button" class="cbi-button cbi-button-reset" id="vps-logoff" value="强制下线其他设备" />
 		</div>
 		<div id="vps-pay-box"></div>
@@ -262,7 +261,6 @@
 	var U_NODES = '<%=luci.dispatcher.build_url("admin", "vps000", "nodes")%>';
 	var U_ACCOUNT = '<%=luci.dispatcher.build_url("admin", "vps000", "account")%>';
 	var U_ORDER = '<%=luci.dispatcher.build_url("admin", "vps000", "order")%>';
-	var U_ORDER_ST = '<%=luci.dispatcher.build_url("admin", "vps000", "order_status")%>';
 	var U_LOGOFF = '<%=luci.dispatcher.build_url("admin", "vps000", "logoff")%>';
 	var pollMs = 4000;
 	var timer = null;
@@ -574,7 +572,6 @@
 	$('vps-ks').onclick = saveQuiet;
 	$('vps-refresh').onclick = function() { loadNodes(true); };
 
-	var lastOrder = '';
 	var accLoaded = false;
 
 	function paintAccount(acc) {
@@ -636,36 +633,17 @@
 				setMsg((st && st.msg) || '下单失败', false);
 				return;
 			}
-			lastOrder = st.order_no || '';
+			var orderNo = st.order_no || '';
 			$('vps-pay-box').className = 'vps-paybox';
-			$('vps-pay-box').innerHTML = '订单 ' + lastOrder +
-				' <a href="' + st.pay_url + '" target="_blank">打开支付页面</a>';
-			setMsg('订单已创建，请完成支付后点查询支付', true);
-		});
-	}
-
-	function queryPay() {
-		var data = lastOrder ? { order_no: lastOrder } : {};
-		setMsg('正在查询支付…');
-		post(U_ORDER_ST, data, function(code, text) {
-			var st = parse(text);
-			if (!st || !st.ok) {
-				setMsg((st && st.msg) || '查询失败', false);
-				return;
-			}
-			if (st.pay_status == '1' || st.pay_status == 1) {
-				setMsg('支付成功', true);
-				loadAccount();
-			} else {
-				setMsg('尚未支付（状态 ' + st.pay_status + '）', false);
-			}
+			$('vps-pay-box').innerHTML = (orderNo ? ('订单 ' + orderNo + ' ') : '') +
+				'<a href="' + st.pay_url + '" target="_blank">打开支付页面</a>';
+			setMsg('订单已创建，请完成支付', true);
 		});
 	}
 
 	$('vps-acc-refresh').onclick = function() { loadAccount(true); };
 	$('vps-pay-ali').onclick = function() { placeOrder('1'); };
 	$('vps-pay-pp').onclick = function() { placeOrder('2'); };
-	$('vps-pay-query').onclick = queryPay;
 	$('vps-logoff').onclick = function() {
 		if (!confirm('将强制下线同账号其他客户端。本机若在线会自动重连。继续？')) return;
 		setMsg('正在请求强制下线…');
