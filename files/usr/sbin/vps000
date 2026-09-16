@@ -905,42 +905,6 @@ lan_dev() {
 	printf '%s' br-lan
 }
 
-# $1=IPv4  $2=cidr  (BusyBox awk, no bitwise ops)
-ip_in_cidr() {
-	[ -n "$1" ] && [ -n "$2" ] || return 1
-	echo "$1 $2" | awk '
-	{
-		split($1, A, ".")
-		split($2, P, "/")
-		split(P[1], B, ".")
-		bits = P[2] + 0
-		if (bits < 0 || bits > 32) exit 1
-		left = bits
-		for (i = 1; i <= 4; i++) {
-			n = (left >= 8) ? 8 : ((left > 0) ? left : 0)
-			if (topbits(A[i] + 0, n) != topbits(B[i] + 0, n)) exit 1
-			left -= n
-		}
-		exit 0
-	}
-	function topbits(x, n) {
-		if (n >= 8) return x
-		if (n <= 0) return 0
-		d = 1
-		for (k = 0; k < (8 - n); k++) d *= 2
-		return int(x / d) * d
-	}'
-}
-
-iface_owns_prefix() {
-	local dev="$1" cidr="$2" a
-	[ -n "$dev" ] && [ -d "/sys/class/net/$dev" ] || return 1
-	for a in $(ip -4 addr show dev "$dev" 2>/dev/null | awk '/inet /{gsub(/\/.*/, "", $2); print $2}'); do
-		ip_in_cidr "$a" "$cidr" && return 0
-	done
-	return 1
-}
-
 reserved_unicast() {
 	printf '%s\n' \
 		10.0.0.0/8 \
@@ -965,10 +929,24 @@ reserved_localonly() {
 		255.255.255.255/32
 }
 
-# Keep reserved destinations off the TUN. Prefer the interface that
-# already owns the prefix (LAN / WAN); otherwise stay on lo.
+# Connected prefixes of $1 into the same table as reserved routes.
+# Longer match than 10/8 172.16/12 192.168/16 so LAN/WAN on-link stay correct.
+pin_iface_connected() {
+	local dev="$1" table="$2" extra="" cidr
+	[ -n "$dev" ] && [ -d "/sys/class/net/$dev" ] || return 0
+	[ -n "$table" ] && extra="table $table"
+	for cidr in $(ip -4 route show dev "$dev" proto kernel 2>/dev/null | awk '$1 ~ /^[0-9]+\./ {print $1}'); do
+		[ -n "$cidr" ] || continue
+		# shellcheck disable=SC2086
+		ip route replace "$cidr" dev "$dev" proto static $extra 2>/dev/null || true
+	done
+}
+
+# Keep reserved destinations off the TUN. Pin RFC1918/CGNAT/etc to WAN so
+# WAN-side management return traffic does not go to LAN or the tunnel.
+# LAN/WAN connected prefixes are installed afterwards (longer match).
 pin_one_reserved() {
-	local p="$1" table="$2" wan="$3" gw="$4" lan="$5" extra=""
+	local p="$1" table="$2" wan="$3" gw="$4" extra=""
 	[ -n "$table" ] && extra="table $table"
 	case "$p" in
 		169.254.0.0/16)
@@ -982,10 +960,7 @@ pin_one_reserved() {
 			return 0
 			;;
 	esac
-	if [ -n "$lan" ] && iface_owns_prefix "$lan" "$p"; then
-		# shellcheck disable=SC2086
-		ip route replace "$p" dev "$lan" proto static $extra 2>/dev/null || true
-	elif [ -n "$wan" ] && iface_owns_prefix "$wan" "$p"; then
+	if [ -n "$wan" ]; then
 		if [ -n "$gw" ]; then
 			# shellcheck disable=SC2086
 			ip route replace "$p" via "$gw" dev "$wan" $extra 2>/dev/null || true
@@ -1009,7 +984,7 @@ pin_reserved_into() {
 	[ -n "$gw" ] || gw=$(wan_gw)
 	lan=$(lan_dev)
 	for p in $(reserved_unicast); do
-		pin_one_reserved "$p" "$table" "$dev" "$gw" "$lan"
+		pin_one_reserved "$p" "$table" "$dev" "$gw"
 	done
 	for p in $(reserved_localonly); do
 		if [ "$p" = "224.0.0.0/4" ] && [ -n "$lan" ]; then
@@ -1026,6 +1001,8 @@ pin_reserved_into() {
 			ip route replace "$p" dev lo proto static 2>/dev/null || true
 		fi
 	done
+	pin_iface_connected "$lan" "$table"
+	pin_iface_connected "$dev" "$table"
 	# Never send loopback via WAN (stale host routes).
 	ip route del 127.0.0.1 2>/dev/null || true
 }
