@@ -14,7 +14,7 @@ define Package/$(PKG_NAME)
 	SUBMENU:=3. Applications
 	TITLE:=VPS000 AnyConnect VPN (account + password)
 	PKGARCH:=all
-	DEPENDS:=+openconnect +luci-proto-openconnect +ip +curl
+	DEPENDS:=+openconnect +luci-proto-openconnect +ip +curl +ipset
 endef
 
 define Package/$(PKG_NAME)/description
