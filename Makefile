@@ -9,18 +9,18 @@ PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 include $(INCLUDE_DIR)/package.mk
 
 define Package/$(PKG_NAME)
-	SECTION:=luci
-	CATEGORY:=LuCI
-	SUBMENU:=3. Applications
-	TITLE:=VPS000 AnyConnect VPN (account + password)
-	PKGARCH:=all
-	DEPENDS:=+openconnect +luci-proto-openconnect +ip +curl +ipset
+  SECTION:=luci
+  CATEGORY:=LuCI
+  SUBMENU:=3. Applications
+  TITLE:=VPS000 AnyConnect VPN (account + password)
+  PKGARCH:=all
+  DEPENDS:=+openconnect +luci-proto-openconnect +ip-full +curl +ipset
 endef
 
 define Package/$(PKG_NAME)/description
-	VPS000 Cisco AnyConnect client. User enters account and password;
-	the gateway is hidden (login.wsdwan.com). Split routing uses
-	existing chnroutes. No orchestrator API.
+  VPS000 Cisco AnyConnect client. User enters account and password;
+  the gateway is hidden (login.wsdwan.com). Split routing uses
+  existing chnroutes. No orchestrator API.
 endef
 
 define Package/$(PKG_NAME)/conffiles
@@ -37,6 +37,7 @@ define Build/Compile
 endef
 
 define Package/$(PKG_NAME)/install
+	$(INSTALL_DIR) $(1)
 	$(CP) ./files/* $(1)/
 	chmod 0755 $(1)/usr/sbin/vps000 $(1)/usr/sbin/vps000-update $(1)/etc/init.d/vps000 \
 		$(1)/etc/hotplug.d/iface/99-vps000 \
