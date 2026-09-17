@@ -1,8 +1,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-vps000
-PKG_VERSION:=1.3.8
-PKG_IMAGE_VERSION:=1.3.8
+PKG_VERSION:=1.3.9
+PKG_IMAGE_VERSION:=1.3.9
 
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)
 
@@ -14,7 +14,8 @@ define Package/$(PKG_NAME)
   SUBMENU:=3. Applications
   TITLE:=VPS000 AnyConnect VPN (account + password)
   PKGARCH:=all
-  DEPENDS:=+openconnect +luci-proto-openconnect +ip +curl +ipset
+  #DEPENDS:=+openconnect +luci-proto-openconnect +ip-full +curl +ipset
+  DEPENDS:=+openconnect +luci-proto-openconnect +ip +curl
 endef
 
 define Package/$(PKG_NAME)/description
