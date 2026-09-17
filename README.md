@@ -2,62 +2,50 @@
 
 VPS000 Cisco AnyConnect 路由器客户端（OpenWrt Barrier Breaker / MT7628）。
 
-菜单：**VPN** → 连接 / 更新
+## 功能简介
+OpenWrt 路由器插件，实现 Cisco AnyConnect VPN 连接功能。用户只需输入账号密码，即可连接到 VPN 服务（网关地址隐藏）。支持开机自动连接、分流路由、防泄露等功能。
 
-## 用户可见
+## 界面展示
+- **VPN 连接**：账号密码登录、线路选择、连接/断开
+- **更新管理**：检查最新版本、安装软件包、整包升级
+- **状态监控**：实时连接状态显示
 
-只需填写账号和密码。登录后选择线路连接。可选开机连接、分流、防泄露。
+## 技术特点
+- 基于 OpenWrt LuCI 框架开发
+- 使用 openconnect 作为底层 VPN 客户端
+- 集成中国大陆路由表（chnroutes）实现分流
+- 支持 MT7628 平台（华硕 AC68U 等路由器）
+- 配置文件：`/etc/config/vps000`
 
-**更新**页从 GitHub Release 检查最新版本：可安装软件包，或下载并 `sysupgrade` 整包固件（默认保留配置后重启）。
+## 依赖组件
+- `openconnect` - VPN 客户端核心
+- `luci-proto-openconnect` - LuCI VPN 协议支持
+- `ip-full`、`curl`、`ipset` - 网络工具
+- `jsonfilter` - GitHub 版本信息解析
+
+## 使用方法
+1. 进入 LuCI 界面：**VPN → 连接 / 更新**
+2. 输入账号和密码
+3. 选择线路并连接
+4. 可选：设置开机连接和分流规则
+
+## 命令行操作
+```
+vps000 login          # 登录 VPN
+vps000 connect        # 连接 VPN
+vps000 disconnect     # 断开 VPN
+vps000 status         # 查看状态
+vps000 update check   # 检查更新
+vps000 update apply ipk    # 安装软件包更新
+vps000 update apply firmware # 整包固件升级
+```
+
+## 编译与发布
+- 本地开发：`./scripts/pack-ipk.sh`
+- 编译：`make package/luci-app-vps000/compile V=s`
+- 发布：包含软件包、固件、manifest.json
 
 仓库：https://github.com/vps668/luci-app-vps000
 
-## 编译
-
-放到 OpenWrt 的 `package/luci-app-vps000`：
-
-```
-make package/luci-app-vps000/compile V=s
-```
-
-不经过完整 SDK 时，可在本仓库打包 ipk：
-
-```
-./scripts/pack-ipk.sh
-```
-
-依赖：`openconnect`、`luci-proto-openconnect`、`ip`、`curl`。本机 `jsonfilter` 用于解析 GitHub 清单。
-
-## Release
-
-每个 GitHub Release **必须**包含固件，缺一不可：
-
-| 文件 | 说明 |
-|---|---|
-| `manifest.json` | 版本清单，路由器更新页优先读取 |
-| `luci-app-vps000_*-all.ipk` | 软件包 |
-| `openwrt-ramips-mt7628-mt7628-squashfs-sysupgrade.bin` | MT7628 整包固件（必带） |
-
-更新说明只维护一份：仓库根目录 `RELEASE_NOTES`。打 Release 时：
-
-```
-./scripts/publish-release.sh --firmware /path/to/openwrt-ramips-mt7628-mt7628-squashfs-sysupgrade.bin --push
-```
-
-未指定 `--firmware` 时，脚本会在 SDK 的 `bin/ramips/`、`firmware/` 或环境变量 `VPS000_FIRMWARE` 中自动查找。没有固件则拒绝 `--push`，避免发出只有 ipk 的 Release。
-
-`manifest.json` 的 `notes` 与 `gh release create --notes-file RELEASE_NOTES` 使用同一文案。
-
-检查与下载都会依次尝试直连 GitHub 与若干镜像（ghproxy / ghfast / kkgithub 等）。固件升级走 `sysupgrade`，默认保留配置。
-
-## 命令
-
-```
-vps000 login
-vps000 connect
-vps000 disconnect
-vps000 status
-vps000 update check
-vps000 update apply ipk
-vps000 update apply firmware
-```
+## 适用设备
+华硕 AC68U（MT7628 平台）及其他基于 MT7628 的 OpenWrt 路由器。
