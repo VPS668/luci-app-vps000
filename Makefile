@@ -44,10 +44,10 @@ define Package/$(PKG_NAME)/install
 		$(1)/usr/share/vps000/killswitch.fw
 	chmod 0644 $(1)/usr/share/vps000/portal.sh 2>/dev/null || true
 	chmod 0644 $(1)/etc/openconnect/connect.d/10-vps000-dns 2>/dev/null || true
-	echo "VPS000_VERSION=$(PKG_VERSION)" > $(1)/usr/share/vps000/version
-	echo "VPS000_IMAGE=$(PKG_IMAGE_VERSION)" >> $(1)/usr/share/vps000/version
-	echo "VPS000_REPO=vps668/luci-app-vps000" >> $(1)/usr/share/vps000/version
-	echo "VPS000_BOARD=mt7628" >> $(1)/usr/share/vps000/version
+	
+	# Sync version from Makefile to the installed version file
+	sed -i 's/^VPS000_VERSION=.*/VPS000_VERSION=$(PKG_VERSION)/' $(1)/usr/share/vps000/version
+	sed -i 's/^VPS000_IMAGE=.*/VPS000_IMAGE=$(PKG_IMAGE_VERSION)/' $(1)/usr/share/vps000/version
 endef
 
 define Package/$(PKG_NAME)/postinst
