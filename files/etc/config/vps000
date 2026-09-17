@@ -1,5 +1,5 @@
 config vps000 'main'
-	option enable '0'
+	option enable '1'
 	option split '1'
 	option account ''
 	option password ''
