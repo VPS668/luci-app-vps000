@@ -12,7 +12,7 @@ WORKDIR=$(mktemp -d)
 trap 'rm -rf "$WORKDIR"' EXIT
 TAR="tar --format=gnu --owner=0 --group=0 --numeric-owner"
 
-mmkdir -p "$WORKDIR/data" "$WORKDIR/ctrl" "$OUTDIR"
+mkdir -p "$WORKDIR/data" "$WORKDIR/ctrl" "$OUTDIR"
 cp -a files/. "$WORKDIR/data/"
 chmod 0755 "$WORKDIR/data/usr/sbin/vps000" \
 	"$WORKDIR/data/usr/sbin/vps000-update" \

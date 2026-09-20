@@ -9,6 +9,9 @@ ACC_TS=/tmp/vps000.account.ts
 PORTAL_JAR="$STATE_DIR/portal.cj"
 ORDER_CACHE=/tmp/vps000.order
 PORTAL_TRIES=3
+AUTH_FLAG="$STATE_DIR/auth"
+AUTH_MSG_FILE="$STATE_DIR/auth.msg"
+AUTH_FAIL_MSG="账号或密码已失效，请重新登录"
 
 portal_curl() {
 	curl -4 -sS -k -L -m 12 --connect-timeout 6 -A "$PORTAL_UA" "$@"
@@ -93,6 +96,38 @@ product_allowed() {
 	return 1
 }
 
+clear_account_session() {
+	rm -f "$ACC_CACHE" "$ACC_TS" "$PROD_CACHE" "$ORDER_CACHE"
+	rm -f "$STATE_DIR/account.cache" "$STATE_DIR/account.ts"
+}
+
+mark_auth_ok() {
+	mkdir_state
+	echo ok > "$AUTH_FLAG"
+	rm -f "$AUTH_MSG_FILE"
+}
+
+mark_auth_fail() {
+	mkdir_state
+	echo fail > "$AUTH_FLAG"
+	printf '%s\n' "${1:-$AUTH_FAIL_MSG}" > "$AUTH_MSG_FILE"
+}
+
+mark_auth_net() {
+	mkdir_state
+	echo net > "$AUTH_FLAG"
+}
+
+auth_is_fail() {
+	[ "$(cat "$AUTH_FLAG" 2>/dev/null)" = fail ]
+}
+
+auth_fail_msg() {
+	local m
+	m=$(cat "$AUTH_MSG_FILE" 2>/dev/null)
+	[ -n "$m" ] && printf '%s' "$m" || printf '%s' "$AUTH_FAIL_MSG"
+}
+
 save_account_cache() {
 	local id username email vip end plan expired
 	id="$1"; username="$2"; email="$3"; vip="$4"; end="$5"
@@ -102,6 +137,7 @@ save_account_cache() {
 	mkdir_state
 	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$username" "$email" "$vip" "$end" "$plan" "$expired" > "$ACC_CACHE"
 	date +%s > "$ACC_TS"
+	mark_auth_ok
 }
 
 migrate_account_cache() {
@@ -123,24 +159,54 @@ account_plan() { read_account_field 6; }
 account_expired() { read_account_field 7; }
 account_vip() { read_account_field 4; }
 
+# 0=ok  1=network/unknown  2=portal rejected credentials
 fetch_userinfo() {
-	local user pass body id username email vip end
+	local user pass body id username email vip end n code msg
 	portal_pin
 	user=$(uci_get account)
 	pass=$(uci_get password)
-	[ -n "$user" ] && [ -n "$pass" ] || return 1
-	body=$(portal_fetch -X POST \
-		--data-urlencode "username=$user" \
-		--data-urlencode "password=$pass" \
-		"$PORTAL_BASE/api/userinfo") || return 1
-	id=$(portal_jf "$body" '@.data.id')
-	username=$(portal_jf "$body" '@.data.username')
-	email=$(portal_jf "$body" '@.data.email')
-	vip=$(portal_jf "$body" '@.data.vip_type')
-	end=$(portal_jf "$body" '@.data.end_time')
-	[ -n "$id" ] || return 1
-	save_account_cache "$id" "$username" "$email" "$vip" "$end"
-	return 0
+	[ -n "$user" ] && [ -n "$pass" ] || {
+		mark_auth_fail "请填写账号密码"
+		return 2
+	}
+	n=0
+	while [ "$n" -lt "$PORTAL_TRIES" ]; do
+		body=$(portal_curl -X POST \
+			--data-urlencode "username=$user" \
+			--data-urlencode "password=$pass" \
+			"$PORTAL_BASE/api/userinfo")
+		code=$(portal_jf "$body" '@.code')
+		msg=$(portal_jf "$body" '@.msg')
+		if [ "$code" = "200" ]; then
+			id=$(portal_jf "$body" '@.data.id')
+			username=$(portal_jf "$body" '@.data.username')
+			email=$(portal_jf "$body" '@.data.email')
+			vip=$(portal_jf "$body" '@.data.vip_type')
+			end=$(portal_jf "$body" '@.data.end_time')
+			[ -n "$id" ] || {
+				n=$((n + 1))
+				[ "$n" -lt "$PORTAL_TRIES" ] && sleep 1
+				continue
+			}
+			save_account_cache "$id" "$username" "$email" "$vip" "$end"
+			return 0
+		fi
+		# API reached: non-200 is credential/account rejection, not a transport blip.
+		if [ -n "$code" ]; then
+			case "$code" in
+				500|502|503|504) ;;
+				*)
+					clear_account_session
+					mark_auth_fail "${msg:-$AUTH_FAIL_MSG}"
+					return 2
+					;;
+			esac
+		fi
+		n=$((n + 1))
+		[ "$n" -lt "$PORTAL_TRIES" ] && sleep 1
+	done
+	mark_auth_net
+	return 1
 }
 
 fetch_products() {
@@ -183,12 +249,18 @@ products_json_for_user() {
 }
 
 cmd_account() {
-	local id username email vip end plan expired stale
+	local id username email vip end plan expired stale rc amsg
 	mkdir_state
 	migrate_account_cache
 	stale=0
-	if fetch_userinfo; then
+	fetch_userinfo
+	rc=$?
+	if [ "$rc" = "0" ]; then
 		fetch_products >/dev/null 2>&1 || true
+	elif [ "$rc" = "2" ]; then
+		amsg=$(json_escape "$(auth_fail_msg)")
+		json_out "{\"ok\":false,\"auth\":\"0\",\"msg\":\"$amsg\"}"
+		return 1
 	else
 		stale=1
 		[ -s "$ACC_CACHE" ] || {
@@ -203,14 +275,14 @@ cmd_account() {
 	end=$(account_end)
 	plan=$(account_plan)
 	expired=$(account_expired)
-	json_out "{\"ok\":true,\"stale\":\"$stale\",\"user_id\":\"$(json_escape "$id")\",\"username\":\"$(json_escape "$username")\",\"email\":\"$(json_escape "$email")\",\"vip_type\":\"$(json_escape "$vip")\",\"end_time\":\"$(json_escape "$end")\",\"plan\":\"$(json_escape "$plan")\",\"expired\":\"$(json_escape "$expired")\",\"products\":$(products_json_for_user)}"
+	json_out "{\"ok\":true,\"auth\":\"1\",\"stale\":\"$stale\",\"user_id\":\"$(json_escape "$id")\",\"username\":\"$(json_escape "$username")\",\"email\":\"$(json_escape "$email")\",\"vip_type\":\"$(json_escape "$vip")\",\"end_time\":\"$(json_escape "$end")\",\"plan\":\"$(json_escape "$plan")\",\"expired\":\"$(json_escape "$expired")\",\"products\":$(products_json_for_user)}"
 }
 
 maybe_refresh_account() {
 	local age
 	[ -n "$(uci_get account)" ] || return 0
 	migrate_account_cache
-	if [ -s "$ACC_CACHE" ] && [ -s "$ACC_TS" ]; then
+	if [ -s "$ACC_CACHE" ] && [ -s "$ACC_TS" ] && ! auth_is_fail; then
 		age=$(($(date +%s) - $(cat "$ACC_TS")))
 		[ "$age" -lt 600 ] 2>/dev/null && return 0
 	fi
@@ -225,9 +297,18 @@ maybe_refresh_account() {
 }
 
 cmd_order() {
-	local uid pid pay month body code ono url
-	uid=$(account_id)
-	[ -n "$uid" ] || fetch_userinfo >/dev/null 2>&1 || true
+	local uid pid pay month body code ono url rc amsg
+	fetch_userinfo
+	rc=$?
+	if [ "$rc" != "0" ]; then
+		if [ "$rc" = "2" ]; then
+			amsg=$(json_escape "$(auth_fail_msg)")
+			json_out "{\"ok\":false,\"auth\":\"0\",\"msg\":\"$amsg\"}"
+		else
+			json_out '{"ok":false,"msg":"账户验证失败，请检查网络后重试"}'
+		fi
+		return 1
+	fi
 	uid=$(account_id)
 	pid=$(scrub "$1")
 	pay=$(scrub "$2")

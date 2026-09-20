@@ -554,8 +554,14 @@
 	function refresh() {
 		post(U_STATUS, {}, function(code, text) {
 			var st = parse(text);
-			if (st) paint(st, true);
-			else $('vps-status').innerHTML = '无法读取状态';
+			if (st) {
+				paint(st, true);
+				if (st.auth == '0' || st.auth == 0) {
+					setLineMsg(st.msg || '账号或密码已失效，请重新登录', false);
+					if (!accAuthed)
+						paintAccount({ ok: false, auth: '0', msg: st.msg || '账号或密码已失效，请重新登录' });
+				}
+			} else $('vps-status').innerHTML = '无法读取状态';
 		});
 	}
 
@@ -573,16 +579,35 @@
 	$('vps-refresh').onclick = function() { loadNodes(true); };
 
 	var accLoaded = false;
+	var accAuthed = false;
+
+	function setPayEnabled(on) {
+		var ali = $('vps-pay-ali');
+		var pp = $('vps-pay-pp');
+		var logoff = $('vps-logoff');
+		var plan = $('vps-plan');
+		if (ali) ali.disabled = !on;
+		if (pp) pp.disabled = !on;
+		if (logoff) logoff.disabled = !on;
+		if (plan) plan.disabled = !on;
+	}
 
 	function paintAccount(acc) {
 		var box = $('vps-acc-meta');
 		var sel = $('vps-plan');
 		var i, p, opt, html;
 		if (!acc || !acc.ok) {
-			if (accLoaded) return;
-			box.innerHTML = '<div class="vps-hint">账户信息暂未获取</div>';
+			accAuthed = false;
+			accLoaded = true;
+			setPayEnabled(false);
+			if (sel) sel.innerHTML = '';
+			box.innerHTML = '<div class="vps-hint">' +
+				((acc && acc.msg) ? acc.msg : '账户信息暂未获取') + '</div>';
+			if (acc && (acc.auth == '0' || acc.auth == 0))
+				setMsg(acc.msg || '账号或密码已失效，请重新登录', false);
 			return;
 		}
+		accAuthed = true;
 		html = metaItem('账号', acc.username) +
 			metaItem('套餐', acc.plan) +
 			metaItem('到期', acc.end_time) +
@@ -603,6 +628,7 @@
 			sel.appendChild(opt);
 		}
 		accLoaded = true;
+		setPayEnabled(true);
 	}
 
 	function loadAccount(manual) {
@@ -611,20 +637,21 @@
 			$('vps-acc-meta').innerHTML = '<div class="vps-hint">正在读取账户…</div>';
 		post(U_ACCOUNT, fields({ node: false, flags: false }), function(code, text) {
 			var acc = parse(text);
-			if (acc && acc.ok) {
-				paintAccount(acc);
-				if (manual === true && acc.stale != '1' && acc.stale != 1)
+			paintAccount(acc);
+			if (manual === true) {
+				if (acc && acc.ok && acc.stale != '1' && acc.stale != 1)
 					setMsg('账户已刷新', true);
-				else if (manual === true)
+				else if (acc && acc.ok)
 					setMsg('未能更新，仍显示上次结果');
-			} else if (!accLoaded) {
-				paintAccount(acc);
+				else
+					setMsg((acc && acc.msg) || '账户验证失败', false);
 			}
 		});
 	}
 
 	function placeOrder(payType) {
 		var pid = $('vps-plan').value;
+		if (!accAuthed) { setMsg('账号或密码已失效，请重新登录后再续费', false); return; }
 		if (!pid) { setMsg('请选择套餐', false); return; }
 		setMsg(payType == '1' ? '正在创建支付宝订单…' : '正在创建 PayPal 订单…');
 		post(U_ORDER, { product_id: pid, pay_type: payType, month: '1' }, function(code, text) {
@@ -654,6 +681,7 @@
 		});
 	};
 
+	setPayEnabled(false);
 	loadNodes();
 	refresh();
 	schedule();

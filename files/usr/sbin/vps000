@@ -148,21 +148,30 @@ set_want() {
 }
 
 set_account() {
-	local a p
+	local a p old_a old_p changed
 	a=$(normalize_account "$1") || {
 		echo "invalid account" >&2
 		return 1
 	}
 	ensure_uci
+	old_a=$(uci_get account)
+	old_p=$(uci_get password)
+	changed=0
+	[ "$a" != "$old_a" ] && changed=1
 	uci_set account "$a"
 	if [ -n "$2" ]; then
 		p=$(normalize_password "$2") || {
 			echo "invalid password" >&2
 			return 1
 		}
+		[ "$p" != "$old_p" ] && changed=1
 		uci_set password "$p"
 	fi
 	uci commit "$UCI_PKG"
+	if [ "$changed" = "1" ] && type clear_account_session >/dev/null 2>&1; then
+		clear_account_session
+		rm -f "$STATE_DIR/auth" "$STATE_DIR/auth.msg"
+	fi
 }
 
 set_enable() {
@@ -1390,7 +1399,7 @@ reset_reconnect_if_stable() {
 }
 
 write_status() {
-	local state msg account enable split ip loc pending acc_end acc_plan acc_exp
+	local state msg account enable split ip loc pending acc_end acc_plan acc_exp authf
 	mkdir_state
 	account=$(uci_get account)
 	enable=$(uci_get enable)
@@ -1425,6 +1434,10 @@ write_status() {
 		loc=$(exit_loc_cached)
 		maybe_refresh_exit_ip
 		reset_reconnect_if_stable
+	elif type auth_is_fail >/dev/null 2>&1 && auth_is_fail; then
+		state=err
+		msg=$(auth_fail_msg)
+		clear_exit_ip
 	elif if_up; then
 		# tun still draining after disconnect — never show the old egress
 		state=off
@@ -1448,7 +1461,11 @@ write_status() {
 		msg="未连接"
 		[ -f "$STATE_DIR/exit_ip" ] && clear_exit_ip
 	fi
-	json_out "{\"ok\":true,\"state\":\"$state\",\"msg\":\"$(json_escape "$msg")\",\"account\":\"$(json_escape "$account")\",\"enable\":\"$enable\",\"split\":\"$split\",\"killswitch\":\"$(killswitch_enabled && echo 1 || echo 0)\",\"connected\":\"$( [ "$state" = up ] && echo 1 || echo 0 )\",\"pending\":\"$pending\",\"ip\":\"$(json_escape "$ip")\",\"loc\":\"$(json_escape "$loc")\",\"expire\":\"$(json_escape "$acc_end")\",\"plan\":\"$(json_escape "$acc_plan")\",\"expired\":\"$(json_escape "$acc_exp")\",\"node\":\"$(json_escape "$(current_node)")\",\"region\":\"$(json_escape "$(node_display_name)")\",\"uptime\":\"$uptime_s\",\"proto\":\"anyconnect\",\"retry\":\"$tries\"}" > "$STATUS_JSON"
+	authf=1
+	if type auth_is_fail >/dev/null 2>&1 && auth_is_fail; then
+		authf=0
+	fi
+	json_out "{\"ok\":true,\"state\":\"$state\",\"msg\":\"$(json_escape "$msg")\",\"account\":\"$(json_escape "$account")\",\"enable\":\"$enable\",\"split\":\"$split\",\"killswitch\":\"$(killswitch_enabled && echo 1 || echo 0)\",\"connected\":\"$( [ "$state" = up ] && echo 1 || echo 0 )\",\"pending\":\"$pending\",\"ip\":\"$(json_escape "$ip")\",\"loc\":\"$(json_escape "$loc")\",\"expire\":\"$(json_escape "$acc_end")\",\"plan\":\"$(json_escape "$acc_plan")\",\"expired\":\"$(json_escape "$acc_exp")\",\"node\":\"$(json_escape "$(current_node)")\",\"region\":\"$(json_escape "$(node_display_name)")\",\"uptime\":\"$uptime_s\",\"proto\":\"anyconnect\",\"retry\":\"$tries\",\"auth\":\"$authf\"}" > "$STATUS_JSON"
 	now_ts > "$STATUS_TS"
 	cat "$STATUS_JSON"
 }
@@ -1491,7 +1508,7 @@ cmd_nodes() {
 }
 
 cmd_connect() {
-	local account password url host gw replace
+	local account password url host gw replace rc amsg
 	replace=
 	[ "$1" = replace ] && replace=1
 	account=$(normalize_account "$(uci_get account)") || {
@@ -1522,6 +1539,18 @@ cmd_connect() {
 	save_wan_default
 	save_wan_dns
 	wait_wan || log "WAN gateway not ready, continue"
+	if type fetch_userinfo >/dev/null 2>&1; then
+		fetch_userinfo
+		rc=$?
+		if [ "$rc" = "2" ]; then
+			set_want 0
+			connect_end
+			amsg=$(json_escape "$(auth_fail_msg)")
+			json_out "{\"ok\":false,\"auth\":\"0\",\"msg\":\"$amsg\"}" | tee "$CONNECT_RESULT"
+			write_status >/dev/null
+			return 1
+		fi
+	fi
 	gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
 	[ -n "$gw" ] || gw=$(wan_gw)
 	fetch_profile >/dev/null 2>&1 || true
@@ -1656,7 +1685,9 @@ cmd_watch() {
 	while true; do
 		waitn=$WATCH_SLEEP
 		if wanted || [ "$(uci_get enable)" = "1" -a "$(uci_get want)" != "0" ]; then
-			if connect_in_progress; then
+			if type auth_is_fail >/dev/null 2>&1 && auth_is_fail; then
+				waitn=$WATCH_SLEEP
+			elif connect_in_progress; then
 				waitn=2
 			elif if_up; then
 				apply_policy >/dev/null 2>&1 || true
