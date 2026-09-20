@@ -30,19 +30,23 @@ find_firmware() {
 	if [ -n "$FW" ] && [ -f "$FW" ]; then
 		return 0
 	fi
-	local p
+	local p newest="" newest_m=0 m
+	# Prefer freshly built bin/ over the firmware/ snapshot. Skip stale release/ copies.
 	for p in \
 		"${VPS000_FIRMWARE:-}" \
-		"$ROOT/release/$FW_NAME_DEFAULT" \
 		"$ROOT/../../bin/ramips/$FW_NAME_DEFAULT" \
 		"$ROOT/../../firmware/$FW_NAME_DEFAULT"
 	do
-		if [ -n "$p" ] && [ -f "$p" ]; then
-			FW=$p
-			return 0
+		[ -n "$p" ] && [ -f "$p" ] || continue
+		m=$(stat -c %Y "$p" 2>/dev/null || echo 0)
+		if [ "$m" -ge "$newest_m" ]; then
+			newest=$p
+			newest_m=$m
 		fi
 	done
-	return 1
+	[ -n "$newest" ] || return 1
+	FW=$newest
+	return 0
 }
 
 mkdir -p "$ROOT/release"

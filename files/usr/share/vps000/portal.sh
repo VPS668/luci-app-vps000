@@ -13,6 +13,18 @@ AUTH_FLAG="$STATE_DIR/auth"
 AUTH_MSG_FILE="$STATE_DIR/auth.msg"
 AUTH_FAIL_MSG="账号或密码已失效，请重新登录"
 
+# Portal/openconnect English errors → Chinese. Keep CJK from the API.
+portal_auth_msg() {
+	local raw="${1:-}" high
+	[ -n "$raw" ] || { printf '%s' "$AUTH_FAIL_MSG"; return; }
+	high=$(printf '%s' "$raw" | tr -cd '\200-\377' 2>/dev/null)
+	if [ -n "$high" ]; then
+		printf '%s' "$raw"
+	else
+		printf '%s' "$AUTH_FAIL_MSG"
+	fi
+}
+
 portal_curl() {
 	curl -4 -sS -k -L -m 12 --connect-timeout 6 -A "$PORTAL_UA" "$@"
 }
@@ -110,7 +122,7 @@ mark_auth_ok() {
 mark_auth_fail() {
 	mkdir_state
 	echo fail > "$AUTH_FLAG"
-	printf '%s\n' "${1:-$AUTH_FAIL_MSG}" > "$AUTH_MSG_FILE"
+	printf '%s\n' "$(portal_auth_msg "${1:-}")" > "$AUTH_MSG_FILE"
 }
 
 mark_auth_net() {

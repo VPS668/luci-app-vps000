@@ -311,8 +311,16 @@
 		return d;
 	}
 
+	function zhMsg(text) {
+		if (!text) return text;
+		if (/account verification failed/i.test(text))
+			return '账号或密码已失效，请重新登录';
+		return text;
+	}
+
 	function setMsg(text, ok) {
 		var el = $('vps-msg');
+		text = zhMsg(text);
 		el.className = 'vps-msg' + (ok === true ? ' vps-msg-ok' : (ok === false ? ' vps-msg-err' : ''));
 		el.innerHTML = text || '';
 	}
@@ -320,6 +328,7 @@
 	function setLineMsg(text, ok) {
 		var el = $('vps-line-msg');
 		if (!el) return;
+		text = zhMsg(text);
 		el.className = 'vps-line-msg' + (ok === true ? ' vps-msg-ok' : (ok === false ? ' vps-msg-err' : ''));
 		el.innerHTML = text || '';
 		el.title = text || '';
@@ -385,7 +394,7 @@
 		else if (state == 'pending') cls += ' vps-wait';
 		else if (state == 'err') cls += ' vps-err';
 		box.className = cls;
-		box.innerHTML = '<div class="vps-hero-top"><span class="vps-dot"></span><div class="vps-state">' + (st.msg || '未连接') + '</div></div>' +
+		box.innerHTML = '<div class="vps-hero-top"><span class="vps-dot"></span><div class="vps-state">' + zhMsg(st.msg || '未连接') + '</div></div>' +
 			'<div class="vps-meta">' +
 			metaItem('账号', st.account) +
 			metaItem('线路', st.region || st.node) +
@@ -602,7 +611,7 @@
 			setPayEnabled(false);
 			if (sel) sel.innerHTML = '';
 			box.innerHTML = '<div class="vps-hint">' +
-				((acc && acc.msg) ? acc.msg : '账户信息暂未获取') + '</div>';
+				zhMsg((acc && acc.msg) ? acc.msg : '账户信息暂未获取') + '</div>';
 			if (acc && (acc.auth == '0' || acc.auth == 0))
 				setMsg(acc.msg || '账号或密码已失效，请重新登录', false);
 			return;
