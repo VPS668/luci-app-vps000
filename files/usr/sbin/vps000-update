@@ -96,41 +96,81 @@ unlock_me() {
 	rm -f "$LOCK"
 }
 
+STATE_DIR=/var/run/vps000
+TUNDEV=vpn-vps000
+
 wan_gw() {
-	ip -4 route show default 2>/dev/null | awk '/via/ && $0 !~ /vpn-vps000/ {for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit }}'
+	local g
+	g=$(ip -4 route show default 2>/dev/null | awk '/via/ && $0 !~ /vpn-vps000/ {for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit }}')
+	[ -n "$g" ] || g=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$g" ] || g=$(ip -4 route get 223.5.5.5 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit }}')
+	printf '%s' "$g"
 }
 
 wan_dev() {
-	ip -4 route show default 2>/dev/null | awk '/via/ && $0 !~ /vpn-vps000/ {for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}'
+	local d
+	d=$(ip -4 route show default 2>/dev/null | awk '/via/ && $0 !~ /vpn-vps000/ {for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+	[ -n "$d" ] || d=$(cat "$STATE_DIR/wan_dev" 2>/dev/null)
+	[ -n "$d" ] || d=$(ip -4 route get 223.5.5.5 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+	printf '%s' "$d"
+}
+
+# TUN down but 0.0.0.0/1 leftover → overseas (GitHub) is "Network unreachable".
+drop_dead_half_net() {
+	local has_tun=0
+	ip -4 addr show "$TUNDEV" 2>/dev/null | grep -q 'inet ' && has_tun=1
+	[ "$has_tun" = 1 ] && return 0
+	ip route del 0.0.0.0/1 dev "$TUNDEV" 2>/dev/null || true
+	ip route del 128.0.0.0/1 dev "$TUNDEV" 2>/dev/null || true
+	ip -4 route del 0.0.0.0/1 2>/dev/null || true
+	ip -4 route del 128.0.0.0/1 2>/dev/null || true
 }
 
 resolve_ipv4() {
 	local host="$1" ip
-	case "$host" in
-		[0-9]*.[0-9]*.[0-9]*.[0-9]*) printf '%s' "$host"; return 0 ;;
-	esac
-	ip=$(resolveip -t 8 "$host" 2>/dev/null | awk '/^[0-9]+\./ {print $1; exit}')
-	[ -n "$ip" ] || ip=$(nslookup "$host" 2>/dev/null | awk '/^Address 1:/{print $3; exit}')
-	[ -n "$ip" ] || ip=$(nslookup "$host" 2>/dev/null | awk '/^Address: / && $2 !~ /#/ {print $2; exit}')
+	ip=$(resolve_all_ipv4 "$host" | head -1)
 	[ -n "$ip" ] && printf '%s' "$ip"
+}
+
+resolve_all_ipv4() {
+	local host="$1"
+	case "$host" in
+		[0-9]*.[0-9]*.[0-9]*.[0-9]*) printf '%s\n' "$host"; return 0 ;;
+		"") return 1 ;;
+	esac
+	{
+		resolveip -t 8 "$host" 2>/dev/null
+		nslookup "$host" 2>/dev/null
+	} | awk '{
+		for (i = 1; i <= NF; i++) {
+			if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./ && $i !~ /^0\./)
+				print $i
+		}
+	}' | sort -u
 }
 
 # Do not touch vps000 endpoint_ip.
 pin_wan() {
 	local host ip gw dev
 	host="$1"
-	ip=$(resolve_ipv4 "$host") || return 0
 	gw=$(wan_gw)
 	dev=$(wan_dev)
-	[ -n "$ip" ] && [ -n "$gw" ] && [ -n "$dev" ] || return 0
-	ip -4 route replace "$ip/32" via "$gw" dev "$dev" 2>/dev/null || true
+	[ -n "$gw" ] && [ -n "$dev" ] || return 0
+	for ip in $(resolve_all_ipv4 "$host"); do
+		[ -n "$ip" ] || continue
+		ip -4 route replace "$ip/32" via "$gw" dev "$dev" 2>/dev/null || true
+	done
 }
 
 pin_update_hosts() {
 	local h
+	drop_dead_half_net
+	if [ -x /usr/sbin/vps000 ]; then
+		/usr/sbin/vps000 pin-update >/dev/null 2>&1 && return 0
+	fi
 	for h in github.com api.github.com objects.githubusercontent.com \
 		release-assets.githubusercontent.com ghproxy.net gh-proxy.com \
-		ghfast.top kkgithub.com hub.gitmirror.com; do
+		ghfast.top kkgithub.com hub.gitmirror.com gh.llkk.cc; do
 		pin_wan "$h"
 	done
 }

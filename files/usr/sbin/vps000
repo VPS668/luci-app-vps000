@@ -28,6 +28,8 @@ DNS_OV2=8.8.8.8
 DNS_CONF=/tmp/dnsmasq.d/vps000.conf
 LEAK_TABLE=51822
 LEAK_RULE_PREF=32765
+# GitHub + release mirrors: always WAN /32, never TUN/half-net.
+UPDATE_HOSTS="github.com api.github.com objects.githubusercontent.com release-assets.githubusercontent.com ghproxy.net gh-proxy.com ghfast.top kkgithub.com hub.gitmirror.com gh.llkk.cc"
 KS_CHAIN=vps_ks
 WATCH_SLEEP=30
 RECONNECT_MAX=2
@@ -611,7 +613,12 @@ wan_logical() {
 }
 
 wan_gw() {
-	ip -4 route show default 2>/dev/null | awk '/via/ && $0 !~ /vpn-vps000/ {for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit }}'
+	local g
+	# Half-net 0.0.0.0/1 is not "default"; after VPN drop there may be no default at all.
+	g=$(ip -4 route show default 2>/dev/null | awk '/via/ && $0 !~ /vpn-vps000/ {for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit }}')
+	[ -n "$g" ] || g=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$g" ] || g=$(ip -4 route get 223.5.5.5 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "via") { print $(i + 1); exit }}')
+	printf '%s' "$g"
 }
 
 wan_dev() {
@@ -643,13 +650,25 @@ restore_wan_default() {
 
 resolve_ipv4() {
 	local host="$1" ip
-	case "$host" in
-		[0-9]*.[0-9]*.[0-9]*.[0-9]*) printf '%s' "$host"; return 0 ;;
-	esac
-	ip=$(resolveip -t 8 "$host" 2>/dev/null | awk '/^[0-9]+\./ {print $1; exit}')
-	[ -n "$ip" ] || ip=$(nslookup "$host" 2>/dev/null | awk '/^Address 1:/{print $3; exit}')
-	[ -n "$ip" ] || ip=$(nslookup "$host" 2>/dev/null | awk '/^Address: / && $2 !~ /#/ {print $2; exit}')
+	ip=$(resolve_all_ipv4 "$host" | head -1)
 	[ -n "$ip" ] && printf '%s' "$ip"
+}
+
+resolve_all_ipv4() {
+	local host="$1"
+	case "$host" in
+		[0-9]*.[0-9]*.[0-9]*.[0-9]*) printf '%s\n' "$host"; return 0 ;;
+		"") return 1 ;;
+	esac
+	{
+		resolveip -t 8 "$host" 2>/dev/null
+		nslookup "$host" 2>/dev/null
+	} | awk '{
+		for (i = 1; i <= NF; i++) {
+			if ($i ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $i !~ /^127\./ && $i !~ /^0\./)
+				print $i
+		}
+	}' | sort -u
 }
 
 pin_host_via_wan() {
@@ -680,6 +699,18 @@ pin_ip_via_wan() {
 	[ -n "$dev" ] || dev=$(wan_dev)
 	[ -n "$gw" ] && [ -n "$dev" ] || return 0
 	ip -4 route replace "$ip/32" via "$gw" dev "$dev" 2>/dev/null || true
+}
+
+pin_update_hosts() {
+	local h ip gw
+	gw=$(cat "$STATE_DIR/wan_gw" 2>/dev/null)
+	[ -n "$gw" ] || gw=$(wan_gw)
+	[ -n "$gw" ] || return 0
+	for h in $UPDATE_HOSTS; do
+		for ip in $(resolve_all_ipv4 "$h"); do
+			pin_ip_via_wan "$ip" "$gw"
+		done
+	done
 }
 
 pin_dns_routes() {
@@ -1312,6 +1343,7 @@ apply_policy() {
 	pin_host_via_wan node.vps000.org "$gw"
 	pin_host_via_wan www.vps000.org "$gw"
 	pin_host_via_wan "$(cat "$STATE_DIR/endpoint_host" 2>/dev/null)" "$gw"
+	pin_update_hosts
 	pin_dns_routes "$gw"
 	apply_upstream_dns
 	if wanted || if_up; then
@@ -1641,6 +1673,7 @@ cmd_disconnect() {
 		unpin_reserved_local
 		ks_clear
 		restore_wan_default
+		pin_update_hosts >/dev/null 2>&1 || true
 		rm -f "$STATE_DIR/upstream_dns" "$STATE_DIR/dns_fp"
 		apply_upstream_dns
 	fi
@@ -1686,6 +1719,11 @@ cmd_watch() {
 		waitn=$WATCH_SLEEP
 		if wanted || [ "$(uci_get enable)" = "1" -a "$(uci_get want)" != "0" ]; then
 			if type auth_is_fail >/dev/null 2>&1 && auth_is_fail; then
+				if ! if_up; then
+					clear_half_net >/dev/null 2>&1 || true
+					restore_wan_default >/dev/null 2>&1 || true
+					pin_update_hosts >/dev/null 2>&1 || true
+				fi
 				waitn=$WATCH_SLEEP
 			elif connect_in_progress; then
 				waitn=2
@@ -1704,6 +1742,10 @@ cmd_watch() {
 					waitn=$WATCH_SLEEP
 				fi
 			fi
+		elif ! if_up; then
+			clear_half_net >/dev/null 2>&1 || true
+			restore_wan_default >/dev/null 2>&1 || true
+			pin_update_hosts >/dev/null 2>&1 || true
 		fi
 		write_status >/dev/null 2>&1 || true
 		sleep "$waitn"
@@ -1724,7 +1766,7 @@ cmd_set() {
 }
 
 usage() {
-	echo "usage: vps000 login|connect [replace]|disconnect|status|nodes|account|order|order-status|logoff|autostart|watch|routes|killswitch|set|update"
+	echo "usage: vps000 login|connect [replace]|disconnect|status|nodes|account|order|order-status|logoff|autostart|watch|routes|killswitch|pin-update|set|update"
 }
 
 case "$1" in
@@ -1741,6 +1783,7 @@ case "$1" in
 	watch) cmd_watch ;;
 	routes) apply_policy; json_out '{"ok":true}' ;;
 	killswitch) apply_killswitch; json_out '{"ok":true}' ;;
+	pin-update) pin_update_hosts; json_out '{"ok":true}' ;;
 	set) shift; cmd_set "$@" ;;
 	update) shift; exec /usr/sbin/vps000-update "$@" ;;
 	*) usage; exit 1 ;;
